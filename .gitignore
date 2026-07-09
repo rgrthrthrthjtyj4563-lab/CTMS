@@ -1,0 +1,46 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# build outputs
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# testing
+coverage/
+.nyc_output/
+
+# misc
+.DS_Store
+*.pem
+.vscode/
+.idea/
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local env files
+.env
+.env.local
+.env.*.local
+
+# prisma generated client
+**/node_modules/.prisma/
+**/node_modules/@prisma/client/
+
+# logs
+logs/
+*.log
+
+# generated seeds/state
+*.sqlite
+*.sqlite-journal
+prisma/migrations/dev.db*

@@ -1,0 +1,1201 @@
+openapi: 3.0.3
+info:
+  title: AIC-DCT API
+  version: 0.1.0
+  description: |
+    AIC-DCT backend API contract (Phase 0). Every endpoint is registered but
+    returns a typed 501 with the canonical error envelope until later
+    phases fill in the handlers.
+
+    Every error response conforms to:
+    ```
+    { "code": "ERROR_CODE", "message": "...", "details": {}, "requestId": "..." }
+    ```
+servers:
+  - url: http://localhost:4000
+    description: Local dev server
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message, requestId]
+      properties:
+        code:
+          type: string
+          enum:
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - VALIDATION_ERROR
+            - CONFLICT
+            - STATE_TRANSITION_INVALID
+            - CONFIRMATION_REQUIRED
+            - REASON_REQUIRED
+            - MASKING_REQUIRED
+            - AI_CONFIRMATION_REQUIRED
+            - AUDIT_REQUIRED
+            - RATE_LIMITED
+            - INTERNAL
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+        requestId: { type: string }
+
+    Role:
+      type: string
+      enum: [SponsorAdmin, CROPM, SitePI, SiteCRC, CRA, Auditor, RegulatorReadOnly, Subject, ProviderLogistics, ProviderNurse, SystemAdmin]
+
+    ProtocolParseStatus:
+      type: string
+      enum: [Uploaded, Parsing, Parsed, ParseFailed, UnderReview, Effective, Superseded]
+    HumanConfirmationStatus:
+      type: string
+      enum: [Pending, Adopted, EditedAdopted, Rejected, NeedsInvestigatorConfirmation]
+    SubjectStatus:
+      type: string
+      enum: [PreScreening, Consenting, Screening, Enrolled, Active, Completed, Withdrawn, ScreenFailed]
+    VisitStatus:
+      type: string
+      enum: [NotStarted, Scheduled, InProgress, SubmittedForPI, Completed, Missed, OutOfWindow, Deviation]
+    ConsentStatus:
+      type: string
+      enum: [NotStarted, Reading, ComprehensionPending, SubjectSigned, InvestigatorSigned, Completed, ReConsentRequired, Withdrawn]
+    QuestionnaireStatus:
+      type: string
+      enum: [Scheduled, InProgress, Submitted, Missed, Late, Reviewed]
+    SafetyEventStatus:
+      type: string
+      enum: [Draft, InvestigatorReview, ConfirmedAE, ConfirmedSAE, Reported, FollowUp, Closed]
+    RiskLevel:
+      type: string
+      enum: [Low, Medium, High, Critical]
+    RiskStatus:
+      type: string
+      enum: [Open, Assigned, InProgress, PendingInvestigator, Resolved, Closed, Rejected]
+    ReportStatus:
+      type: string
+      enum: [Generating, Draft, UnderReview, Confirmed, Exported, Failed]
+
+    Project:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        sponsor: { type: string }
+        therapeuticArea: { type: string }
+        phase: { type: string, enum: [I, II, III, IV] }
+        startDate: { type: string, format: date-time }
+        estimatedEndDate: { type: string, format: date-time, nullable: true }
+
+    SubjectMasked:
+      type: object
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        siteId: { type: string }
+        subjectCode: { type: string }
+        initials: { type: string, nullable: true }
+        yearOfBirth: { type: integer, nullable: true }
+        ageBand: { type: string, nullable: true }
+        sex: { type: string, enum: [Male, Female, Other, Unknown], nullable: true }
+        city: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/SubjectStatus' }
+
+    SubjectFull:
+      allOf:
+        - $ref: '#/components/schemas/SubjectMasked'
+        - type: object
+          properties:
+            fullName: { type: string }
+            nationalId: { type: string }
+            dateOfBirth: { type: string, format: date }
+            phone: { type: string }
+            email: { type: string, format: email }
+            address: { type: string }
+
+    SafetyEvent:
+      type: object
+      properties:
+        id: { type: string }
+        subjectId: { type: string }
+        onsetAt: { type: string, format: date-time }
+        description: { type: string }
+        severity: { $ref: '#/components/schemas/RiskLevel' }
+        status: { $ref: '#/components/schemas/SafetyEventStatus' }
+        isSerious: { type: boolean }
+        aiSuggested: { type: boolean }
+
+    RiskSignal:
+      type: object
+      properties:
+        id: { type: string }
+        level: { $ref: '#/components/schemas/RiskLevel' }
+        type: { type: string }
+        objectType: { type: string }
+        objectId: { type: string }
+        trigger: { type: string }
+        suggestion: { type: string, nullable: true }
+        ownerUserId: { type: string, nullable: true }
+        deadline: { type: string, format: date-time, nullable: true }
+        status: { $ref: '#/components/schemas/RiskStatus' }
+        aiOutputId: { type: string, nullable: true }
+
+    AIOutput:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        projectId: { type: string }
+        subjectId: { type: string, nullable: true }
+        payload: { type: object, additionalProperties: true }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        confidenceLevel: { type: string, enum: [Low, Medium, High] }
+        status: { $ref: '#/components/schemas/HumanConfirmationStatus' }
+        model: { type: string }
+        modelVersion: { type: string }
+        promptTemplateId: { type: string, nullable: true }
+        inputHash: { type: string }
+        knowledgeBaseRefs: { type: array, items: { type: string } }
+        generatedAt: { type: string, format: date-time }
+        confirmedByUserId: { type: string, nullable: true }
+        confirmedAt: { type: string, format: date-time, nullable: true }
+        rejectionReason: { type: string, nullable: true }
+
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string }
+        actorUserId: { type: string }
+        actorRole: { $ref: '#/components/schemas/Role' }
+        projectId: { type: string }
+        objectType: { type: string }
+        objectId: { type: string }
+        action: { type: string }
+        beforeValue: { type: object, additionalProperties: true, nullable: true }
+        afterValue: { type: object, additionalProperties: true, nullable: true }
+        reason: { type: string, nullable: true }
+        ipAddress: { type: string, nullable: true }
+        userAgent: { type: string, nullable: true }
+        device: { type: string, nullable: true }
+        requestId: { type: string, nullable: true }
+        timestamp: { type: string, format: date-time }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: ok
+  /readyz:
+    get:
+      summary: Readiness probe
+      security: []
+      responses:
+        '200':
+          description: ready
+
+  /api/auth/login:
+    post:
+      summary: Login (Phase 2)
+      security: []
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /api/auth/logout:
+    post:
+      summary: Logout
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /api/auth/session:
+    get:
+      summary: Get current session
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/projects:
+    get:
+      summary: List projects
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create project
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/projects/{projectId}:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get project
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    patch:
+      summary: Update project
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/projects/{projectId}/archive:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Archive project
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/projects/{projectId}/dashboard:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get project dashboard payload
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/projects/{projectId}/protocol/parse:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Trigger AI protocol parse (Phase 3)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/projects/{projectId}/protocol/{versionId}/activate:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+      - { name: versionId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Activate a protocol version (requires reason)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, confirmed]
+              properties:
+                reason: { type: string }
+                confirmed: { type: boolean }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/subjects:
+    get:
+      summary: List subjects (masked by default)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Subject list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SubjectMasked' }
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create subject
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/subjects/{subjectId}:
+    parameters:
+      - { name: subjectId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get subject (masked)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/subjects/{subjectId}/identity/full:
+    parameters:
+      - { name: subjectId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get subject full identity (audited; requires subject:read.full)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Subject full identity
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubjectFull' }
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/subjects/{subjectId}/status:
+    parameters:
+      - { name: subjectId, in: path, required: true, schema: { type: string } }
+    patch:
+      summary: Update subject status
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/SubjectStatus' }
+                reason: { type: string }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/subjects/{subjectId}/withdraw:
+    parameters:
+      - { name: subjectId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Withdraw subject
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/consent/documents:
+    get:
+      summary: List consent documents
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create consent document
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/consent/tasks:
+    get:
+      summary: List consent tasks
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/consent/tasks/{taskId}/start:
+    parameters:
+      - { name: taskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Start consent reading
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/consent/tasks/{taskId}/sign:
+    parameters:
+      - { name: taskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Sign consent (audited)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/consent/tasks/{taskId}/re-consent:
+    parameters:
+      - { name: taskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Re-consent (requires reason)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/consent/tasks/{taskId}/withdraw:
+    parameters:
+      - { name: taskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Withdraw consent
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/visits:
+    get:
+      summary: List visits
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Schedule visit
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/visits/{visitId}:
+    parameters:
+      - { name: visitId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get visit
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    patch:
+      summary: Update visit
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/visits/{visitId}/start:
+    parameters:
+      - { name: visitId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Start visit
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/visits/{visitId}/submit:
+    parameters:
+      - { name: visitId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Submit visit for PI review
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/visits/{visitId}/close:
+    parameters:
+      - { name: visitId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Close visit (audited)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/visits/{visitId}/remote-session:
+    parameters:
+      - { name: visitId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Start remote visit session
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/epro/templates:
+    get:
+      summary: List questionnaire templates
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create questionnaire template
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/epro/responses:
+    get:
+      summary: List questionnaire responses
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/epro/responses/{responseId}/submit:
+    parameters:
+      - { name: responseId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Submit questionnaire response
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/epro/responses/{responseId}/review:
+    parameters:
+      - { name: responseId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Mark questionnaire reviewed
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/safety/events:
+    get:
+      summary: List safety events
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create safety event
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/safety/events/{eventId}:
+    parameters:
+      - { name: eventId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get safety event
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/safety/events/{eventId}/confirm:
+    parameters:
+      - { name: eventId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Confirm AE/SAE (audited, confirmation required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/safety/events/{eventId}/report:
+    parameters:
+      - { name: eventId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Report SAE (audited, reason required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/safety/events/{eventId}/follow-up:
+    parameters:
+      - { name: eventId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Add safety follow-up
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/safety/events/{eventId}/close:
+    parameters:
+      - { name: eventId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Close safety event (audited, reason required)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/risks:
+    get:
+      summary: List risk signals
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create risk signal
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/risks/{riskId}/assign:
+    parameters:
+      - { name: riskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Assign risk owner
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/risks/{riskId}/resolve:
+    parameters:
+      - { name: riskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Resolve risk
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/risks/{riskId}/close:
+    parameters:
+      - { name: riskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Close risk (reason required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/risks/{riskId}/reject:
+    parameters:
+      - { name: riskId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Reject risk (reason required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/risks/dashboard:
+    get:
+      summary: Get risk monitoring dashboard
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/drugs/shipments:
+    get:
+      summary: List drug shipments
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Dispatch drug shipment
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/drugs/shipments/{shipmentId}/receive:
+    parameters:
+      - { name: shipmentId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Mark drug shipment received
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/samples/transfers:
+    get:
+      summary: List sample transfers
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create sample transfer
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/samples/transfers/{transferId}/collect:
+    parameters:
+      - { name: transferId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Mark sample collected
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/samples/transfers/{transferId}/transport:
+    parameters:
+      - { name: transferId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Mark sample in transport
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/reports:
+    get:
+      summary: List reports
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Generate report
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/reports/{reportId}/confirm:
+    parameters:
+      - { name: reportId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Confirm report (audited, confirmation required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/reports/{reportId}/export:
+    parameters:
+      - { name: reportId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Export report (audited, reason required)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, format]
+              properties:
+                reason: { type: string }
+                format: { type: string, enum: [CSV, PDF, XLSX, JSON] }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/documents:
+    get:
+      summary: List documents
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create document
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/documents/{documentId}/versions:
+    parameters:
+      - { name: documentId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: List document versions
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Upload new document version
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/configs:
+    get:
+      summary: List AI configs
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/configs/{configId}:
+    parameters:
+      - { name: configId, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Update AI config (SystemAdmin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/prompt-templates:
+    get:
+      summary: List prompt templates
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create prompt template
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/outputs:
+    get:
+      summary: List AI outputs
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/outputs/{outputId}/adopt:
+    parameters:
+      - { name: outputId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Adopt AI output (audited, confirmation required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/outputs/{outputId}/reject:
+    parameters:
+      - { name: outputId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Reject AI output (audited, reason required)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/ai/call-logs:
+    get:
+      summary: List AI call logs
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/audit/events:
+    get:
+      summary: List audit events (audit/regulator only)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Write an audit event
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/audit/exports:
+    get:
+      summary: List audit exports
+      security: [{ bearerAuth: [] }]
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    post:
+      summary: Create audit export (audited, reason required)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, filters, format]
+              properties:
+                reason: { type: string }
+                filters: { type: object, additionalProperties: true }
+                format: { type: string, enum: [CSV, PDF, XLSX, JSON] }
+      responses:
+        '501':
+          description: Not implemented in Phase 0
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }

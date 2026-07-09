@@ -1,0 +1,28 @@
+{
+  "name": "aic-dct",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AIC-DCT Remote Intelligent Clinical Trial Operating System",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:migrate": "npm run db:migrate --workspace=apps/api --if-present",
+    "db:seed": "npm run db:seed --workspace=apps/api --if-present",
+    "db:generate": "npm run db:generate --workspace=apps/api --if-present"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "@types/node": "20.14.10"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@aic-dct/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"(web) Phase 1 wires the real dev server; Phase 0 only establishes the package.\" && exit 0",
+    "build": "echo \"(web) Phase 1 builds the productized shell.\" && exit 0",
+    "lint": "eslint src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aic-dct/config": "*",
+    "@aic-dct/domain": "*"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "vitest": "2.0.5"
+  }
+}
