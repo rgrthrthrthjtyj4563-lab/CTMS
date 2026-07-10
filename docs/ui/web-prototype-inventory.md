@@ -2,6 +2,11 @@
 
 Source: `Web后台UI设计/`, reviewed on 2026-07-09.
 
+> Phase 1 production mapping appended 2026-07-09. See section 9 for the
+> final destination of every prototype function, mock array, and visual
+> token in the Vite/React + React-Router v6 + shadcn-style build that lands
+> under `apps/web/`.
+
 ## 1. What This Directory Is
 
 `Web后台UI设计/` is a runnable Figma Make code bundle for the Web back-office UI. It should be treated as the primary Web visual and interaction baseline.
@@ -143,4 +148,102 @@ When reviewing Web implementation, compare against this prototype first. A chang
 - Reconciles a conflict with the PDF design document or compliance contract.
 
 Unexplained visual rewrites should be rejected.
+
+## 9. Phase 1 Production Mapping
+
+Phase 1 ships the Web shell as a Vite/React/TypeScript SPA under `apps/web/`
+with React Router v6, Tailwind 4, and shadcn-style components. Routes are
+file-per-page; domain components are split from the shared UI library.
+Mock arrays from `App.tsx` are replaced with API/seed data; visual tokens
+are CSS variables on `:root` mirroring `Web后台UI设计/src/styles/theme.css`.
+
+### 9.1 Visual tokens (CSS variables)
+
+| Token | Final path |
+| --- | --- |
+| Color, spacing, radius, shadow, typography | `apps/web/src/styles/tokens.css` (`:root` block mirroring prototype) |
+| Tailwind 4 theme bridge | `apps/web/src/styles/index.css` (`@theme inline` mirroring prototype) |
+| Page background, foreground, sidebar, primary, AI accent, risk | `apps/web/src/styles/tokens.css` |
+| Component class utilities | `apps/web/src/lib/cn.ts` (clsx + tailwind-merge) |
+
+### 9.2 Shared UI primitives
+
+| Prototype function | Production path |
+| --- | --- |
+| `Btn` | `apps/web/src/components/ui/Button.tsx` |
+| `RiskBadge` | `apps/web/src/components/domain/RiskTag.tsx` |
+| `AITag` | `apps/web/src/components/domain/AITag.tsx` |
+| `StatusTag` | `apps/web/src/components/ui/Tag.tsx` |
+| `KPICard` | `apps/web/src/components/domain/KpiCard.tsx` |
+| `RiskCard` | `apps/web/src/components/domain/RiskCard.tsx` |
+| `AISuggestionCard` | `apps/web/src/components/domain/AISuggestionCard.tsx` |
+| `SectionHeader` | `apps/web/src/components/ui/SectionHeader.tsx` |
+| `AuditTrail` | `apps/web/src/components/ui/AuditTrail.tsx` |
+| `EmptyState` | `apps/web/src/components/ui/EmptyState.tsx` |
+| `Tabs` | `apps/web/src/components/ui/Tabs.tsx` |
+| `DataTable` | `apps/web/src/components/ui/DataTable.tsx` |
+| `ProgressBar` | `apps/web/src/components/ui/ProgressBar.tsx` |
+| `InfoRow` | `apps/web/src/components/ui/InfoRow.tsx` |
+| `Modal` (confirm/high-risk/AI/delete/export/protocol-activate/close-alert/adopt-ai-note) | `apps/web/src/components/ui/Modal.tsx` (variant prop) |
+| `Drawer` (480/720 variants) | `apps/web/src/components/ui/Drawer.tsx` |
+| `Sidebar` | `apps/web/src/components/app/SideNav.tsx` |
+| `Topbar` | `apps/web/src/components/app/TopBar.tsx` |
+| `MainLayout` | `apps/web/src/components/app/AppShell.tsx` |
+
+Additional primitives the plan requires but the prototype omitted:
+
+| Concern | Production path |
+| --- | --- |
+| Plain `Input` / `Select` / `Checkbox` / `Radio` / `Badge` / `Card` / `Toast` / `Pagination` / `LoadingState` | `apps/web/src/components/ui/<Name>.tsx` |
+| Toast host (sonner) | `apps/web/src/components/ui/Toaster.tsx` |
+
+### 9.3 Pages
+
+| Prototype page | Production route / path |
+| --- | --- |
+| `LoginPage` | `apps/web/src/routes/LoginPage.tsx` (`/login`) |
+| (no prototype — plan Task 1.4) | `apps/web/src/routes/ProjectSelectionPage.tsx` (`/projects`) |
+| `DashboardPage` | `apps/web/src/routes/DashboardPage.tsx` (`/app/dashboard`) |
+| `ProtocolPage` (Phase 3) | placeholder route (NavLink still rendered) |
+| `SubjectsPage` / `SubjectDetailPage` (Phase 2) | placeholder route |
+| `RemoteVisitPage` (Phase 2) | placeholder route |
+| `AESAEPage` (Phase 2) | placeholder route |
+| `RiskMonitorPage` (Phase 3) | placeholder route |
+| `EConsentPage` (Phase 2) | placeholder route |
+| `EPROPage` (Phase 2) | placeholder route |
+| `DrugsPage` (Phase 2) | placeholder route |
+| `ReportsPage` (Phase 3) | placeholder route |
+| `DocumentsPage` (Phase 2) | placeholder route |
+| `AIConfigPage` (Phase 3) | placeholder route |
+| `SettingsPage` (Phase 4) | placeholder route |
+
+### 9.4 Mock arrays → API/seed
+
+| Prototype constant | Production destination |
+| --- | --- |
+| `SUBJECTS` | `GET /api/dashboard/high-risk-subjects` (Prisma `subject.findMany` filtered by AI risk score) |
+| `RISK_ITEMS` | `GET /api/dashboard/risks` (Prisma `riskSignal.findMany` joined with subject) |
+| `ENROLLMENT_DATA` | `GET /api/dashboard/enrollment-trend` (Prisma aggregate by month) |
+| `RISK_TREND` | `GET /api/dashboard/risk-trend` (Prisma aggregate by month) |
+| `CENTER_RISK` | `GET /api/dashboard/center-risk` (Prisma group by site) |
+| `AUDIT_LOGS` | `GET /api/audit/events` (already enumerated in Phase 0; first 5 surfaced) |
+
+### 9.5 Login & session (mock auth)
+
+- `POST /api/auth/login` accepts `{ email, password }`; rejects with
+  401 unless `email` matches a seed user and `password.length >= 4`. Returns
+  `{ user, role, projectId }`.
+- `apps/web` stores the result in `localStorage` under
+  `aic-dct.session` and renders `ProjectSelectionPage` when projects
+  exist, otherwise `DashboardPage`.
+- No real OIDC; the JWT secret is unused this phase.
+
+### 9.6 Deliberate discards
+
+- The prototype's `LoginPage` `captcha` block (random 4-char string) is
+  discarded: Phase 1 has no real captcha service; the field stays in the UI
+  as a decorative placeholder.
+- The prototype's `2fa` step is replaced with a single-step mock login.
+- The prototype's hard-coded `王医生 (PI)` is replaced with the logged-in
+  user's display name from the seed.
 

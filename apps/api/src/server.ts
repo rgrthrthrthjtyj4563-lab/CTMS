@@ -1,17 +1,18 @@
 /**
- * AIC-DCT API server (Phase 0 skeleton).
+ * AIC-DCT API server (Phase 1).
  *
- * Goals of this Phase 0 entrypoint:
- *   1. Demonstrate a typed, consistent error envelope via Fastify setErrorHandler.
- *   2. Mount route skeletons for every domain surface listed in the architecture
- *      roadmap. Skeletons return a 501 with the canonical error envelope until
- *      later phases wire real handlers — but they exist so the contract is
- *      reviewable now.
- *   3. Wire CORS, helmet, and request-id so production deployments don't need
- *      a separate config pass later.
+ * Phase 1 scope:
+ *   1. Typed, consistent error envelope via Fastify setErrorHandler.
+ *   2. Real handlers for the dashboard surface (kpis / trends / center
+ *      risk / risks / high-risk subjects / audit log / AI suggestions /
+ *      task queue) backed by the Prisma seed. Other domain routes still
+ *      register 501 skeletons — they will land in Phase 2+ as the
+ *      corresponding Web pages go live.
+ *   3. Production-grade defaults: helmet, CORS, request-id, structured
+ *      pino logging, graceful Prisma disconnect on shutdown.
  *
- * Real Prisma / DB wiring lands in Phase 2; this file intentionally stays
- * free of database imports so it can boot offline for smoke checks.
+ * Real Prisma / DB wiring is live in Phase 1 for the dashboard; broader
+ * domain tables are introduced in Phase 2.
  */
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
@@ -32,6 +33,7 @@ import { registerReportRoutes } from "./routes/reports.js";
 import { registerDocumentRoutes } from "./routes/documents.js";
 import { registerAiConfigRoutes } from "./routes/ai-config.js";
 import { registerAuditRoutes } from "./routes/audit.js";
+import { registerDashboardRoutes } from "./routes/dashboard.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -103,15 +105,20 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerDocumentRoutes(app);
   registerAiConfigRoutes(app);
   registerAuditRoutes(app);
+  registerDashboardRoutes(app);
 
   return app;
 }
 
-// Allow `node dist/server.js` to start the listener.
+// Allow `node dist/server.js` (compiled) and `tsx src/server.ts` (dev) to
+// start the listener. Both entrypoints should bind the port; otherwise
+// `npm run dev` (which uses tsx + .ts) silently exits and leaves the
+// Web Vite proxy with a connection-refused upstream.
+const entry = process.argv[1] ?? "";
 const isMain =
   typeof process !== "undefined" &&
   Array.isArray(process.argv) &&
-  process.argv[1]?.endsWith("server.js");
+  (entry.endsWith("server.js") || entry.endsWith("server.ts"));
 
 if (isMain) {
   const port = Number(process.env.PORT ?? 4000);
