@@ -69,22 +69,60 @@ const SEVERITY_LABEL: Record<string, string> = {
 };
 
 /**
- * Returns true when the event must be reported to IRB / NMPA within 24h
- * of onset (the canonical SAE reporting window). Counts from onsetAt.
+ * SAE 24h reporting deadline.
+ *
+ * Clinical semantics: the regulatory window starts when the investigator
+ * becomes aware the event is serious (i.e. the moment status becomes
+ * ConfirmedSAE), NOT from onsetAt. We derive that timestamp from the
+ * audit trail by finding the most recent `confirm` event whose afterValue
+ * is { to: "ConfirmedSAE" }. If no such audit row exists (e.g. for an
+ * event that's still Draft but flagged isSerious=true), fall back to
+ * onsetAt as a best-effort placeholder.
+ *
+ * `confirmedAt` is the timestamp that should be passed in — it must be
+ * computed on the detail page where auditTrail is available; the list
+ * page does NOT show the countdown (not enough data).
  */
 function reportDeadline(
-  onsetAt: string,
+  confirmedAt: string | null,
+  fallback: string,
   isSerious: boolean,
   status: SafetyEventStatusValue,
 ): { remainingMs: number; tone: "ok" | "warn" | "alert" | "expired" | null } {
-  if (!isSerious || status === "Reported" || status === "Closed") return { remainingMs: 0, tone: null };
-  const elapsed = Date.now() - new Date(onsetAt).getTime();
+  if (!isSerious || status === "Reported" || status === "Closed") {
+    return { remainingMs: 0, tone: null };
+  }
+  const start = confirmedAt
+    ? new Date(confirmedAt).getTime()
+    : new Date(fallback).getTime();
+  const elapsed = Date.now() - start;
   const deadline = 24 * 60 * 60 * 1000;
   const remaining = deadline - elapsed;
   if (remaining <= 0) return { remainingMs: remaining, tone: "expired" };
   if (remaining < 60 * 60 * 1000) return { remainingMs: remaining, tone: "alert" };
   if (remaining < 24 * 60 * 60 * 1000) return { remainingMs: remaining, tone: "warn" };
   return { remainingMs: remaining, tone: "ok" };
+}
+
+/**
+ * Helper to derive `confirmedAt` from an audit trail. Returns the timestamp
+ * of the most recent confirm→ConfirmedSAE event, or null if no such row.
+ */
+export function deriveConfirmedAt(
+  auditTrail: ReadonlyArray<{
+    action: string;
+    afterValue: unknown;
+    timestamp: string;
+  }>,
+): string | null {
+  let latest: string | null = null;
+  for (const a of auditTrail) {
+    if (a.action !== "confirm") continue;
+    const after = a.afterValue as { to?: string } | null;
+    if (after?.to !== "ConfirmedSAE") continue;
+    if (!latest || a.timestamp > latest) latest = a.timestamp;
+  }
+  return latest;
 }
 
 function formatRemaining(ms: number): string {
@@ -174,7 +212,9 @@ export function SafetyEventsPage() {
         label: "SAE 报告倒计时",
         width: "140px",
         render: (r) => {
-          const d = reportDeadline(r.onsetAt, r.isSerious, r.status);
+          // List page lacks auditTrail; pass null + onsetAt fallback. The
+          // detail page renders the precise countdown using deriveConfirmedAt.
+          const d = reportDeadline(null, r.onsetAt, r.isSerious, r.status);
           if (!d.tone) return <span className="text-xs text-slate-400">—</span>;
           const tone = d.tone;
           const label =
@@ -462,5 +502,3 @@ export function SafetyEventsPage() {
     </div>
   );
 }
-
-void pushToast;

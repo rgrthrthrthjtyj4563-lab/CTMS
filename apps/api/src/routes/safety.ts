@@ -6,39 +6,39 @@
  *   POST   /api/safety/events                  — create AE (Draft default)
  *   POST   /api/safety/events/:eventId/confirm — PI confirm (Draft → ConfirmedAE/SAE)
  *   POST   /api/safety/events/:eventId/report  — PI report SAE (ConfirmedSAE → Reported)
- *   POST   /api/safety/events/:eventId/follow-up — PI/CRC follow-up
- *   POST   /api/safety/events/:eventId/close   - PI close (Confirmed-AE / Reported / FollowUp to Closed)
+ *   POST   /api/safety/events/:eventId/follow-up — append follow-up record only
+ *   POST   /api/safety/events/:eventId/close   — close (any active → Closed)
+ *
+ * RBAC: each endpoint goes through domain's Permission matrix (SafetyRead /
+ * SafetyDraft / SafetyConfirm / SafetyReport / SafetyClose). Subject role is
+ * not granted SafetyRead so it cannot list/read safety data.
  *
  * Lifecycle is guarded by SAFETY_EVENT_TRANSITIONS. Critical mutations
- * (Confirm/Report/Close) write AuditEvent; Report/Close require a
- * server-validated reason (CRITICAL_AUDIT_PAIRS).
+ * (Confirm/Report/Close) write AuditEvent with beforeValue; Report/Close
+ * require a server-validated reason (audit helper enforces REASON_REQUIRED).
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   ApiErrorCode,
   ApiErrorException,
-  Role,
+  Permission,
   RiskLevel,
   SafetyEventStatus,
+  authorize,
   canTransition,
   SAFETY_EVENT_TRANSITIONS,
   type SafetyEventStatus as SafetyEventStatusT,
 } from "@aic-dct/domain";
-import {
-  Prisma,
-  type SafetyEvent,
-  type SafetyFollowUp,
-  type AuditEvent,
-  type Subject,
-  type User,
+import type {
+  SafetyEvent,
+  SafetyFollowUp,
+  AuditEvent,
+  Subject,
+  User,
 } from "@prisma/client";
 import { prisma } from "../db.js";
-import {
-  audit,
-  requireUser,
-  type AuthenticatedUser,
-} from "../lib/auth.js";
+import { audit, requireUser } from "../lib/auth.js";
 
 const listQuerySchema = z.object({
   projectId: z.string().optional(),
@@ -58,7 +58,7 @@ const createSchema = z.object({
 });
 
 const confirmSchema = z.object({
-  outcome: z.nativeEnum(SafetyEventStatus), // ConfirmedAE | ConfirmedSAE
+  outcome: z.nativeEnum(SafetyEventStatus),
   isSerious: z.boolean().optional(),
 });
 
@@ -76,42 +76,6 @@ const closeSchema = z.object({
   reason: z.string().min(1).max(2000),
 });
 
-const ROLES_THAT_CAN_DRAFT: ReadonlySet<Role> = new Set([
-  Role.SitePI,
-  Role.SiteCRC,
-  Role.ProviderNurse,
-  Role.SponsorAdmin,
-  Role.CROPM,
-  Role.SystemAdmin,
-]);
-
-const ROLES_THAT_CAN_CONFIRM: ReadonlySet<Role> = new Set([
-  Role.SitePI,
-  Role.SponsorAdmin,
-  Role.SystemAdmin,
-]);
-
-const ROLES_THAT_CAN_REPORT_OR_CLOSE: ReadonlySet<Role> = new Set([
-  Role.SitePI,
-  Role.SponsorAdmin,
-  Role.SystemAdmin,
-]);
-
-function assertRole(
-  user: AuthenticatedUser,
-  allowed: ReadonlySet<Role>,
-  action: string,
-  requestId: string,
-): void {
-  if (!allowed.has(user.role)) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      `Role '${user.role}' cannot ${action}`,
-      { requestId, details: { role: user.role } },
-    );
-  }
-}
-
 function assertSafetyTransition(
   from: SafetyEventStatusT,
   to: SafetyEventStatusT,
@@ -126,7 +90,7 @@ function assertSafetyTransition(
 }
 
 async function loadEventScoped(
-  user: AuthenticatedUser,
+  user: { projectId: string },
   eventId: string,
 ) {
   const event = await prisma().safetyEvent.findUnique({
@@ -150,39 +114,13 @@ async function loadEventScoped(
   return event;
 }
 
-async function writeAuditWithReason(args: {
-  projectId: string;
-  actorUserId: string;
-  actorRole: string;
-  action: string;
-  objectId: string;
-  beforeValue?: Record<string, unknown> | null;
-  afterValue?: Record<string, unknown> | null;
-  reason: string;
-  requestId: string;
-}): Promise<void> {
-  await prisma().auditEvent.create({
-    data: {
-      projectId: args.projectId,
-      actorUserId: args.actorUserId,
-      actorRole: args.actorRole,
-      action: args.action,
-      objectType: "SafetyEvent",
-      objectId: args.objectId,
-      beforeValue: (args.beforeValue ?? null) as Prisma.InputJsonValue | undefined,
-      afterValue: (args.afterValue ?? null) as Prisma.InputJsonValue | undefined,
-      reason: args.reason,
-      requestId: args.requestId,
-    },
-  });
-}
-
 export function registerSafetyRoutes(app: FastifyInstance): void {
   /* ─── List ────────────────────────────────────────────── */
   app.get<{ Querystring: z.infer<typeof listQuerySchema> }>(
     "/api/safety/events",
     async (req) => {
       const user = await requireUser(req);
+      authorize(user, Permission.SafetyRead, { requestId: req.id });
       const parsed = listQuerySchema.safeParse(req.query);
       if (!parsed.success) {
         throw new ApiErrorException(
@@ -198,6 +136,8 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         ...(status ? { status } : {}),
         ...(severity ? { severity } : {}),
       };
+      // Severity descending (most severe first), then most recent onset. This
+      // puts Critical/High events at the top of the investigator's queue.
       const [rows, total] = await Promise.all([
         prisma().safetyEvent.findMany({
           where,
@@ -206,7 +146,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
             createdBy: { select: { displayName: true } },
             _count: { select: { followUps: true } },
           },
-          orderBy: [{ status: "asc" }, { onsetAt: "desc" }],
+          orderBy: [{ severity: "desc" }, { onsetAt: "desc" }],
           skip: (page - 1) * pageSize,
           take: pageSize,
         }),
@@ -244,6 +184,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     "/api/safety/events/:eventId",
     async (req) => {
       const user = await requireUser(req);
+      authorize(user, Permission.SafetyRead, { requestId: req.id });
       const event = await loadEventScoped(user, req.params.eventId);
       const [followUps, auditTrail] = await Promise.all([
         prisma().safetyFollowUp.findMany({
@@ -254,7 +195,6 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         prisma().auditEvent.findMany({
           where: { objectType: "SafetyEvent", objectId: event.id },
           orderBy: { timestamp: "desc" },
-          take: 50,
         }),
       ]);
       type FollowUp = SafetyFollowUp & { recordedBy: Pick<User, "displayName"> };
@@ -301,7 +241,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     "/api/safety/events",
     async (req) => {
       const user = await requireUser(req);
-      assertRole(user, ROLES_THAT_CAN_DRAFT, "draft safety events", req.id);
+      authorize(user, Permission.SafetyDraft, { requestId: req.id });
       const parsed = createSchema.safeParse(req.body);
       if (!parsed.success) {
         throw new ApiErrorException(
@@ -332,11 +272,19 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
           createdByUserId: user.userId,
         },
       });
-      await audit(req, user, "safety-event.create", "SafetyEvent", created.id, {
-        subjectId: created.subjectId,
-        severity: created.severity,
-        isSerious: created.isSerious,
-      });
+      await audit(
+        req,
+        user,
+        "create",
+        "SafetyEvent",
+        created.id,
+        {
+          subjectId: created.subjectId,
+          severity: created.severity,
+          isSerious: created.isSerious,
+        },
+        { beforeValue: null },
+      );
       return { id: created.id, status: created.status };
     },
   );
@@ -347,7 +295,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof confirmSchema>;
   }>("/api/safety/events/:eventId/confirm", async (req) => {
     const user = await requireUser(req);
-    assertRole(user, ROLES_THAT_CAN_CONFIRM, "confirm safety events", req.id);
+    authorize(user, Permission.SafetyConfirm, { requestId: req.id });
     const parsed = confirmSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -385,11 +333,19 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
             : parsed.data.isSerious ?? event.isSerious,
       },
     });
-    await audit(req, user, "confirm", "SafetyEvent", updated.id, {
-      from: event.status,
-      to: updated.status,
-      isSerious: updated.isSerious,
-    });
+    await audit(
+      req,
+      user,
+      "confirm",
+      "SafetyEvent",
+      updated.id,
+      {
+        from: event.status,
+        to: updated.status,
+        isSerious: updated.isSerious,
+      },
+      { beforeValue: { status: event.status, isSerious: event.isSerious } },
+    );
     return {
       id: updated.id,
       status: updated.status,
@@ -403,7 +359,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof reportSchema>;
   }>("/api/safety/events/:eventId/report", async (req) => {
     const user = await requireUser(req);
-    assertRole(user, ROLES_THAT_CAN_REPORT_OR_CLOSE, "report SAEs", req.id);
+    authorize(user, Permission.SafetyReport, { requestId: req.id });
     const parsed = reportSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -425,36 +381,32 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
       where: { id: event.id },
       data: { status: SafetyEventStatus.Reported },
     });
-    await writeAuditWithReason({
-      projectId: event.projectId,
-      actorUserId: user.userId,
-      actorRole: user.role,
-      action: "report",
-      objectId: event.id,
-      beforeValue: { status: event.status },
-      afterValue: {
-        status: updated.status,
+    // audit() helper enforces REASON_REQUIRED via criticalActionMeta.
+    await audit(
+      req,
+      user,
+      "report",
+      "SafetyEvent",
+      updated.id,
+      {
+        to: updated.status,
         regulator: parsed.data.regulator ?? null,
       },
-      reason: parsed.data.reason,
-      requestId: req.id,
-    });
+      {
+        beforeValue: { status: event.status },
+        reason: parsed.data.reason,
+      },
+    );
     return { id: updated.id, status: updated.status };
   });
 
-  /* ─── Follow-up (PI / CRC / Sponsor) ──────────────────── */
+  /* ─── Follow-up: append-only record, does NOT change status ─────── */
   app.post<{
     Params: { eventId: string };
     Body: z.infer<typeof followUpSchema>;
   }>("/api/safety/events/:eventId/follow-up", async (req) => {
     const user = await requireUser(req);
-    if (!ROLES_THAT_CAN_DRAFT.has(user.role)) {
-      throw new ApiErrorException(
-        ApiErrorCode.FORBIDDEN,
-        `Role ${user.role} cannot record follow-ups`,
-        { requestId: req.id },
-      );
-    }
+    authorize(user, Permission.SafetyDraft, { requestId: req.id });
     const parsed = followUpSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -464,6 +416,13 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
       );
     }
     const event = await loadEventScoped(user, req.params.eventId);
+    if (event.status === SafetyEventStatus.Closed) {
+      throw new ApiErrorException(
+        ApiErrorCode.STATE_TRANSITION_INVALID,
+        "Cannot record follow-up on a closed event",
+        { requestId: req.id, details: { eventId: event.id } },
+      );
+    }
     const followUpAt = parsed.data.followUpAt
       ? new Date(parsed.data.followUpAt)
       : new Date();
@@ -475,28 +434,25 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         recordedByUserId: user.userId,
       },
     });
-    let statusUpdate: SafetyEventStatusT | undefined;
-    if (
-      event.status === SafetyEventStatus.ConfirmedAE ||
-      event.status === SafetyEventStatus.ConfirmedSAE ||
-      event.status === SafetyEventStatus.Reported
-    ) {
-      assertSafetyTransition(event.status, SafetyEventStatus.FollowUp);
-      await prisma().safetyEvent.update({
-        where: { id: event.id },
-        data: { status: SafetyEventStatus.FollowUp },
-      });
-      statusUpdate = SafetyEventStatus.FollowUp;
-    }
-    await audit(req, user, "safety-event.follow-up", "SafetyEvent", event.id, {
-      followUpId: fu.id,
-      statusChange: statusUpdate ? { from: event.status, to: statusUpdate } : null,
-    });
+    // No status mutation: follow-up is append-only. Reported/ConfirmedSAE
+    // events stay Reported/ConfirmedSAE even as follow-ups accumulate.
+    await audit(
+      req,
+      user,
+      "safety-event.follow-up",
+      "SafetyEvent",
+      event.id,
+      {
+        followUpId: fu.id,
+        statusSnapshot: event.status,
+      },
+      { beforeValue: { status: event.status } },
+    );
     return {
       id: fu.id,
       followUpAt: fu.followUpAt.toISOString(),
       outcome: fu.outcome,
-      status: statusUpdate ?? event.status,
+      status: event.status,
     };
   });
 
@@ -506,7 +462,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof closeSchema>;
   }>("/api/safety/events/:eventId/close", async (req) => {
     const user = await requireUser(req);
-    assertRole(user, ROLES_THAT_CAN_REPORT_OR_CLOSE, "close safety events", req.id);
+    authorize(user, Permission.SafetyClose, { requestId: req.id });
     const parsed = closeSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -528,17 +484,18 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
       where: { id: event.id },
       data: { status: SafetyEventStatus.Closed },
     });
-    await writeAuditWithReason({
-      projectId: event.projectId,
-      actorUserId: user.userId,
-      actorRole: user.role,
-      action: "close",
-      objectId: event.id,
-      beforeValue: { status: event.status },
-      afterValue: { status: updated.status },
-      reason: parsed.data.reason,
-      requestId: req.id,
-    });
+    await audit(
+      req,
+      user,
+      "close",
+      "SafetyEvent",
+      updated.id,
+      { to: updated.status },
+      {
+        beforeValue: { status: event.status },
+        reason: parsed.data.reason,
+      },
+    );
     return { id: updated.id, status: updated.status };
   });
 }

@@ -143,6 +143,18 @@ export type QuestionnaireStatus =
   (typeof QuestionnaireStatus)[keyof typeof QuestionnaireStatus];
 export const QuestionnaireStatusSchema = z.nativeEnum(QuestionnaireStatus);
 
+export const QUESTIONNAIRE_STATUS_TRANSITIONS: Record<
+  QuestionnaireStatus,
+  QuestionnaireStatus[]
+> = {
+  Scheduled: ["InProgress", "Missed", "Late"],
+  InProgress: ["Submitted", "Late"],
+  Submitted: ["Reviewed"],
+  Missed: [],
+  Late: ["InProgress", "Submitted"],
+  Reviewed: [],
+};
+
 // ─── Safety Event Status ─────────────────────────────────────
 export const SafetyEventStatus = {
   Draft: "Draft",
@@ -165,7 +177,9 @@ export const SAFETY_EVENT_TRANSITIONS: Record<
   InvestigatorReview: ["ConfirmedAE", "ConfirmedSAE"],
   ConfirmedAE: ["FollowUp", "Closed"],
   ConfirmedSAE: ["Reported", "FollowUp", "Closed"],
-  Reported: ["FollowUp", "Closed"],
+  // Reported is a terminal-within-status: follow-up records append without
+  // demoting back to FollowUp. Only closure moves Reported forward.
+  Reported: ["Closed"],
   FollowUp: ["FollowUp", "Closed"],
   Closed: [],
 };

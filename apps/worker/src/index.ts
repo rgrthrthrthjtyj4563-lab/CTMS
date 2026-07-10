@@ -1,9 +1,9 @@
 /**
- * Phase 0 worker skeleton.
+ * Phase 3 worker entrypoint.
  *
- * Real BullMQ + Redis wiring is added in Phase 3. This entrypoint exists so
- * `npm run dev` boots a no-op loop and so phase-3 jobs have a stable
- * extension point.
+ * Runs an in-process setInterval poll loop (no BullMQ/Redis). New
+ * AI-driven jobs (protocol parsing in Task 3.3, risk scanning in 3.2)
+ * extend classifyJob() / runJob() below.
  */
 import { AIOutputKind, formatConfidence } from "@aic-dct/domain";
 
