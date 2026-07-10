@@ -175,7 +175,6 @@ export function RemoteVisitPage() {
   };
 
   const status = visitMeta?.status ?? "";
-  const remoteActive = Boolean(remote && !remote.endedAt);
   const completedTasks = tasks.filter((t) => t.completed).length;
   const totalTasks = tasks.length;
 

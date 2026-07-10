@@ -125,7 +125,6 @@ if (isMain) {
   buildServer()
     .then((app) => app.listen({ port, host: "0.0.0.0" }))
     .catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("failed to start api", err);
       process.exit(1);
     });

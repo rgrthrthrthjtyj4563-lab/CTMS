@@ -35,7 +35,6 @@ import {
   type QuestionnaireSection,
 } from "../lib/api/epro.js";
 import { listSubjects } from "../lib/api/subjects.js";
-import { apiPost } from "../lib/api/client.js";
 
 const QSTATUS_LABEL: Record<string, string> = {
   Scheduled: "待开始",
