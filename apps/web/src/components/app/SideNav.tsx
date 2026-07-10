@@ -34,7 +34,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { id: "econsent", label: "电子知情", path: "/app/econsent", icon: FileText },
   { id: "remote-visit", label: "远程访视", path: "/app/remote-visit", icon: Video },
   { id: "epro", label: "ePRO / eCOA", path: "/app/epro", icon: ClipboardList },
-  { id: "ae-sae", label: "AE/SAE 安全事件", path: "/app/ae-sae", icon: AlertTriangle, phase: "Phase 2" },
+  { id: "ae-sae", label: "AE/SAE 安全事件", path: "/app/ae-sae", icon: AlertTriangle },
   { id: "risk-monitor", label: "AI 风险监查", path: "/app/risk-monitor", icon: Shield, aiFlag: true, phase: "Phase 3" },
   { id: "drugs", label: "药品与样本", path: "/app/drugs", icon: Package, phase: "Phase 2" },
   { id: "reports", label: "报告中心", path: "/app/reports", icon: BarChart2, phase: "Phase 3" },

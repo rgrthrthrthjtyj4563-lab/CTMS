@@ -161,9 +161,9 @@ export const SAFETY_EVENT_TRANSITIONS: Record<
   SafetyEventStatus,
   SafetyEventStatus[]
 > = {
-  Draft: ["InvestigatorReview"],
+  Draft: ["InvestigatorReview", "ConfirmedAE", "ConfirmedSAE"],
   InvestigatorReview: ["ConfirmedAE", "ConfirmedSAE"],
-  ConfirmedAE: ["Reported", "FollowUp", "Closed"],
+  ConfirmedAE: ["FollowUp", "Closed"],
   ConfirmedSAE: ["Reported", "FollowUp", "Closed"],
   Reported: ["FollowUp", "Closed"],
   FollowUp: ["FollowUp", "Closed"],

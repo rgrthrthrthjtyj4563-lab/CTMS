@@ -9,6 +9,8 @@ import { SubjectDetailPage } from "./routes/SubjectDetailPage.js";
 import { EConsentPage } from "./routes/EConsentPage.js";
 import { RemoteVisitPage } from "./routes/RemoteVisitPage.js";
 import { EproPage } from "./routes/EproPage.js";
+import { SafetyEventsPage } from "./routes/SafetyEventsPage.js";
+import { SafetyEventDetailPage } from "./routes/SafetyEventDetailPage.js";
 import { AppShell } from "./components/app/AppShell.js";
 import { Toaster } from "./components/ui/Toast.js";
 import { loadSession, type Session } from "./lib/session.js";
@@ -38,11 +40,6 @@ const ROUTE_PHASE: Record<string, { title: string; phase: "Phase 2" | "Phase 3" 
     title: "ePRO / eCOA",
     phase: "Phase 2",
     description: "患者报告结局、量表回收、缺项提醒。",
-  },
-  "/app/ae-sae": {
-    title: "AE/SAE 安全事件",
-    phase: "Phase 2",
-    description: "不良事件记录、严重性判定、监管报告联动。",
   },
   "/app/risk-monitor": {
     title: "AI 风险监查",
@@ -147,6 +144,22 @@ function EproRoute() {
   );
 }
 
+function SafetyEventsRoute() {
+  return (
+    <RequireAuth>
+      <SafetyEventsPage />
+    </RequireAuth>
+  );
+}
+
+function SafetyEventDetailRoute() {
+  return (
+    <RequireAuth>
+      <SafetyEventDetailPage />
+    </RequireAuth>
+  );
+}
+
 function PlaceholderRoute() {
   const location = useLocation();
   const cfg = ROUTE_PHASE[location.pathname];
@@ -170,6 +183,8 @@ export function App() {
         <Route path="/app/econsent" element={<EConsentRoute />} />
         <Route path="/app/remote-visit" element={<RemoteVisitRoute />} />
         <Route path="/app/epro" element={<EproRoute />} />
+        <Route path="/app/ae-sae" element={<SafetyEventsRoute />} />
+        <Route path="/app/ae-sae/:eventId" element={<SafetyEventDetailRoute />} />
         {Object.keys(ROUTE_PHASE)
           .filter(
             (p) =>

@@ -28,17 +28,6 @@ describe("API server", () => {
     await app.close();
   });
 
-  it("Skeleton routes return canonical error envelope", async () => {
-    const app = await buildServer();
-    const res = await app.inject({ method: "GET", url: "/api/safety/events" });
-    expect(res.statusCode).toBe(500);
-    const body = res.json();
-    expect(body.code).toBe("INTERNAL");
-    expect(body.details).toMatchObject({ phase: "Phase 3" });
-    expect(typeof body.requestId).toBe("string");
-    await app.close();
-  });
-
   it("All documented API surfaces are registered", async () => {
     const app = await buildServer();
     // Phase 1 routes that return real data.
@@ -56,7 +45,6 @@ describe("API server", () => {
       "/api/consent/documents",
       "/api/visits",
       "/api/epro/templates",
-      "/api/safety/events",
       "/api/risks",
       "/api/drugs/shipments",
       "/api/samples/transfers",
@@ -64,6 +52,8 @@ describe("API server", () => {
       "/api/documents",
       "/api/ai/configs",
       "/api/audit/events",
+      // /api/safety/events is now fully implemented in Phase 3.
+      // It is verified by its own route file instead of via skeleton contract.
     ];
     for (const url of skeleton) {
       const res = await app.inject({ method: "GET", url });
