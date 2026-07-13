@@ -25,6 +25,11 @@ import {
   type SafetyEventStatusValue,
 } from "../lib/api/safety.js";
 import { ApiError } from "../lib/api/client.js";
+import {
+  deriveConfirmedAt,
+  formatRemaining,
+  reportDeadline,
+} from "./SafetyEventsPage.js";
 
 const STATUS_LABEL: Record<SafetyEventStatusValue, string> = {
   Draft: "草稿",
@@ -139,6 +144,27 @@ export function SafetyEventDetailPage() {
         description: f.outcome,
         tone: "primary" as const,
       })),
+    [data],
+  );
+
+  /**
+   * SAE 24h countdown. deriveConfirmedAt() pulls the timestamp from the
+   * audit trail (last confirm→ConfirmedSAE); if no such audit row exists
+   * (e.g. Draft flagged isSerious=true), fall back to onsetAt. MUST be
+   * declared BEFORE the early returns below so the hook order stays stable
+   * across the null→loaded transition (React Rules of Hooks). The list page
+   * has no auditTrail so this countdown only renders here.
+   */
+  const reportTimer = useMemo(
+    () =>
+      data
+        ? reportDeadline(
+            deriveConfirmedAt(data.auditTrail),
+            data.event.onsetAt,
+            data.event.isSerious,
+            data.event.status,
+          )
+        : null,
     [data],
   );
 
@@ -296,6 +322,26 @@ export function SafetyEventDetailPage() {
               <div className="text-slate-500">发生时间</div>
               <div className="text-slate-800">{formatDate(e.onsetAt)}</div>
             </div>
+            {reportTimer?.tone ? (
+              <div className="col-span-2">
+                <div className="text-slate-500">SAE 上报倒计时</div>
+                <div
+                  className="text-sm font-medium mt-0.5"
+                  style={{
+                    color:
+                      reportTimer.tone === "expired" || reportTimer.tone === "alert"
+                        ? "var(--risk-critical-text)"
+                        : reportTimer.tone === "warn"
+                          ? "var(--risk-high-text)"
+                          : "var(--risk-medium-text)",
+                  }}
+                >
+                  {reportTimer.tone === "expired"
+                    ? `已超期 ${formatRemaining(reportTimer.remainingMs)}`
+                    : `距 24h 上报截止 剩 ${formatRemaining(reportTimer.remainingMs)}`}
+                </div>
+              </div>
+            ) : null}
             <div className="col-span-2">
               <div className="text-slate-500">事件描述</div>
               <div className="text-slate-800 mt-1">{e.description}</div>

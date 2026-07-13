@@ -83,7 +83,7 @@ const SEVERITY_LABEL: Record<string, string> = {
  * computed on the detail page where auditTrail is available; the list
  * page does NOT show the countdown (not enough data).
  */
-function reportDeadline(
+export function reportDeadline(
   confirmedAt: string | null,
   fallback: string,
   isSerious: boolean,
@@ -125,7 +125,7 @@ export function deriveConfirmedAt(
   return latest;
 }
 
-function formatRemaining(ms: number): string {
+export function formatRemaining(ms: number): string {
   const sign = ms < 0 ? "-" : "";
   const abs = Math.abs(ms);
   const h = Math.floor(abs / 3_600_000);

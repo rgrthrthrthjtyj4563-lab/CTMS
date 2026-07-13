@@ -23,5 +23,5 @@ export function describeConfidence(value: number): string {
 }
 
 if (typeof process !== "undefined" && process.argv[1]?.endsWith("index.js")) {
-  console.log("[worker] Phase 0 worker idle. Phase 3 wires BullMQ jobs.");
+  console.log("[worker] Phase 3 worker idle. setInterval poll loop (no BullMQ/Redis).");
 }

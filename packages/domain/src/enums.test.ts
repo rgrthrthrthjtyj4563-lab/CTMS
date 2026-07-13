@@ -24,6 +24,7 @@ import {
   VISIT_STATUS_TRANSITIONS,
   SUBJECT_STATUS_TRANSITIONS,
   CONSENT_STATUS_TRANSITIONS,
+  QUESTIONNAIRE_STATUS_TRANSITIONS,
   SAFETY_EVENT_TRANSITIONS,
   RISK_STATUS_TRANSITIONS,
   REPORT_STATUS_TRANSITIONS,
@@ -113,6 +114,15 @@ describe("QuestionnaireStatus", () => {
     expect(Object.values(QuestionnaireStatus).sort()).toEqual(
       ["Scheduled", "InProgress", "Submitted", "Missed", "Late", "Reviewed"].sort(),
     );
+  });
+
+  it("Scheduled -> InProgress allowed, Submitted -> Scheduled forbidden", () => {
+    expect(canTransition(QUESTIONNAIRE_STATUS_TRANSITIONS, QuestionnaireStatus.Scheduled, QuestionnaireStatus.InProgress)).toBe(true);
+    expect(canTransition(QUESTIONNAIRE_STATUS_TRANSITIONS, QuestionnaireStatus.Submitted, QuestionnaireStatus.Scheduled)).toBe(false);
+  });
+
+  it("Reviewed is terminal", () => {
+    expect(QUESTIONNAIRE_STATUS_TRANSITIONS.Reviewed).toEqual([]);
   });
 });
 

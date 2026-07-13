@@ -25,7 +25,6 @@ import { buildServer } from "../server.js";
 import { disconnectPrisma, prisma } from "../db.js";
 import { Role, RiskLevel, SafetyEventStatus } from "@aic-dct/domain";
 import type { FastifyInstance } from "fastify";
-import type { User, Subject, SafetyEvent } from "@prisma/client";
 
 const RUN_TAG = `safety-test-${Date.now()}`;
 
@@ -245,6 +244,70 @@ describe("Safety routes", () => {
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().code).toBe("NOT_FOUND");
+  });
+
+  /* ─── Cross-project isolation ────────────────────────────── */
+
+  it("isolation: user from project A cannot read event in project B (403)", async () => {
+    // Build a sibling project + event. Current CRA is in project A; trying
+    // to read the B-project event must be denied even though CRA has
+    // SafetyRead globally — RBAC is scoped by project membership.
+    const otherProject = await prisma().project.create({
+      data: {
+        code: `OTHER-${RUN_TAG}`,
+        name: "Other safety route test project",
+        sponsor: "Test",
+        therapeuticArea: "Test",
+        phase: "II",
+        description: `${RUN_TAG}-OTHER`,
+        startDate: new Date(),
+      },
+    });
+    const otherSite = await prisma().site.create({
+      data: {
+        projectId: otherProject.id,
+        code: `SITE-OTHER-${RUN_TAG}`,
+        name: "Other site",
+        city: "OtherCity",
+        region: "OtherRegion",
+      },
+    });
+    const otherSubject = await prisma().subject.create({
+      data: {
+        projectId: otherProject.id,
+        siteId: otherSite.id,
+        status: "Active",
+        subjectCode: `SUBJ-OTHER-${RUN_TAG}`,
+        initials: "O",
+        yearOfBirth: 1980,
+        ageBand: "40岁",
+        sex: "Male",
+        city: "OtherCity",
+        ownerUserId: fix.piId,
+      },
+    });
+    const otherEvent = await prisma().safetyEvent.create({
+      data: {
+        projectId: otherProject.id,
+        subjectId: otherSubject.id,
+        onsetAt: new Date(),
+        description: "Event in OTHER project",
+        severity: RiskLevel.High,
+        status: SafetyEventStatus.Draft,
+        isSerious: false,
+        createdByUserId: fix.piId,
+      },
+    });
+    // CRA is in project A and has SafetyRead globally. Reading the
+    // project-B event must still be denied by loadEventScoped's project
+    // guard. This is the cross-tenant isolation property.
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/safety/events/${otherEvent.id}`,
+      ...asUser(fix.craId),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("FORBIDDEN");
   });
 
   /* ─── Create ─────────────────────────────────────────────────── */
@@ -482,6 +545,20 @@ describe("Safety routes", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("Reported");
+  });
+
+  it("follow-up: CRA (lacks SafetyDraft) is denied 403", async () => {
+    // CRA has SafetyRead but NOT SafetyDraft; the follow-up endpoint guards
+    // on SafetyDraft so the read-only monitor role must be denied even
+    // though it could otherwise read the event.
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/safety/events/${fix.eventConfirmedSaeId}/follow-up`,
+      ...asUser(fix.craId),
+      payload: { outcome: "CRA attempting to record follow-up" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("FORBIDDEN");
   });
 
   it("follow-up: closed event rejects further follow-up 409", async () => {
