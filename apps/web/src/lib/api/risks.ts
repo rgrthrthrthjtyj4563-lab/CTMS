@@ -46,7 +46,7 @@ export interface RiskHandlingRow {
   id: string;
   actorName: string;
   actorRole: string;
-  action: "assign" | "resolve" | "close" | "reject";
+  action: "assign" | "start" | "resolve" | "close" | "reject";
   fromStatus: RiskStatusValue;
   toStatus: RiskStatusValue;
   reason: string | null;
@@ -121,6 +121,12 @@ export async function assignRisk(
   ownerUserId: string,
 ): Promise<{ id: string; status: RiskStatusValue; ownerUserId: string | null }> {
   return apiPost(`/api/risks/${id}/assign`, { ownerUserId });
+}
+
+export async function startRisk(
+  id: string,
+): Promise<{ id: string; status: RiskStatusValue }> {
+  return apiPost(`/api/risks/${id}/start`, {});
 }
 
 export async function resolveRisk(

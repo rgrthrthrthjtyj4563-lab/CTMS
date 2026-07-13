@@ -5,9 +5,11 @@
  * status/level/type, and opens a side drawer with the full handling
  * history + audit trail + AI output payload.
  *
- * Lifecycle actions (assign / resolve / close / reject) are delegated to
- * api/risks; the server enforces the state machine + RBAC. The UI only
+ * Lifecycle actions (assign / start / resolve / close / reject) are delegated
+ * to api/risks; the server enforces the state machine + RBAC. The UI only
  * surfaces the next legal action set per status.
+ *
+ * Demo path: Open → Assign → Start → Resolve → Close.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Drawer } from "../components/ui/Drawer.js";
@@ -29,6 +31,7 @@ import {
   listRisks,
   rejectRisk,
   resolveRisk,
+  startRisk,
   type RiskDetailResponse,
   type RiskLevelValue,
   type RiskListRow,
@@ -134,6 +137,7 @@ export function RiskMonitorPage() {
 
   // Why-must-this-be-served modal: enforces reason on close/reject for
   // high/critical levels and (defense-in-depth) on every close/reject call.
+  // Start has no modal (no body); it posts immediately via performStart.
   const [reasonModal, setReasonModal] = useState<{
     mode: "resolve" | "close" | "reject" | "assign";
     reasonRequired: boolean;
@@ -190,6 +194,27 @@ export function RiskMonitorPage() {
     setSelectedId(null);
     setDetail(null);
   }, []);
+
+  async function performStart() {
+    if (!selectedId) return;
+    setSubmitting(true);
+    try {
+      await startRisk(selectedId);
+      pushToast({ tone: "success", title: "已开始处理" });
+      await openDetail(selectedId);
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError) {
+        pushToast({
+          tone: "error",
+          title: "开始处理失败",
+          description: e.message,
+        });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function performAction() {
     if (!reasonModal || !selectedId) return;
@@ -349,7 +374,8 @@ export function RiskMonitorPage() {
             </p>
             <p>
               Assign 操作将状态推进到「已分派」并写入新的 owner；建议
-              site 研究者或监查员作为 owner。
+              site 研究者或监查员作为 owner。Owner 再点「开始处理」进入
+              InProgress，之后才可「解决」。关闭（Close）仅 CROPM。
             </p>
           </div>
         </Card>
@@ -518,7 +544,9 @@ export function RiskMonitorPage() {
               </section>
             ) : null}
 
-            {/* Lifecycle actions: gate on status. */}
+            {/* Lifecycle actions: gate on status.
+                Open → 分派/驳回; Assigned → 开始处理/分派/驳回;
+                InProgress|PendingInvestigator → 解决; Resolved → 关闭. */}
             <section>
               <SectionHeader title="生命周期操作" />
               <div className="flex flex-wrap gap-2">
@@ -530,6 +558,15 @@ export function RiskMonitorPage() {
                     disabled={submitting}
                   >
                     分派
+                  </Button>
+                )}
+                {detail.risk.status === "Assigned" && (
+                  <Button
+                    size="sm"
+                    onClick={() => void performStart()}
+                    disabled={submitting}
+                  >
+                    开始处理
                   </Button>
                 )}
                 {(detail.risk.status === "InProgress" ||
@@ -579,11 +616,13 @@ export function RiskMonitorPage() {
                       <div className="font-medium text-slate-800">
                         {h.action === "assign"
                           ? "分派"
-                          : h.action === "resolve"
-                            ? "解决"
-                            : h.action === "close"
-                              ? "关闭"
-                              : "驳回"}
+                          : h.action === "start"
+                            ? "开始处理"
+                            : h.action === "resolve"
+                              ? "解决"
+                              : h.action === "close"
+                                ? "关闭"
+                                : "驳回"}
                         {" · "}
                         {h.actorName}（{h.actorRole}）
                       </div>

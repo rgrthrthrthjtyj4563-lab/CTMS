@@ -1,15 +1,17 @@
 /**
  * Risk route integration tests.
  *
- * Covers the 6 endpoints in apps/api/src/routes/risks.ts:
+ * Covers the 7 endpoints in apps/api/src/routes/risks.ts:
  *
  *   GET    /api/risks
  *   GET    /api/risks/:riskId
  *   POST   /api/risks/:riskId/assign
+ *   POST   /api/risks/:riskId/start
  *   POST   /api/risks/:riskId/resolve
  *   POST   /api/risks/:riskId/close
  *   POST   /api/risks/:riskId/reject
  *
+ * Demo path (all via HTTP): Open → assign → start → resolve → close.
  * Fixtures: per-test project / site / subjects / users / risk signals,
  * tagged with a unique runTag so cleanup is unambiguous.
  */
@@ -26,7 +28,7 @@ interface Fixtures {
   crcId: string;
   auditorId: string;
   craId: string;
-  // CROPM fixture: has RiskClose (PI and CRC do NOT have RiskClose).
+  // CROPM fixture: sole role with RiskClose (SponsorAdmin / PI / CRC do not).
   croPmId: string;
   subjectId: string;
   // Open risk (PI is owner) — for assign/resolve/close
@@ -358,10 +360,99 @@ describe("Risk routes", () => {
     expect(res.statusCode).toBe(422);
   });
 
+  /* ─── Start (Assigned → InProgress) ─────────────────────────── */
+
+  it("start: PI can Assigned→InProgress via API", async () => {
+    const fresh = await prisma().riskSignal.create({
+      data: {
+        projectId: (await prisma().subject.findUnique({ where: { id: fix.subjectId } }))!.projectId,
+        level: RiskLevel.Medium,
+        type: "数据质量",
+        objectType: "Subject",
+        objectId: fix.subjectId,
+        subjectId: fix.subjectId,
+        trigger: "Start test fresh",
+        status: RiskStatus.Open,
+        ownerUserId: fix.piId,
+      },
+    });
+    const assignRes = await app.inject({
+      method: "POST",
+      url: `/api/risks/${fresh.id}/assign`,
+      ...asUser(fix.piId),
+      payload: { ownerUserId: fix.piId },
+    });
+    expect(assignRes.statusCode).toBe(200);
+    expect(assignRes.json().status).toBe("Assigned");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/risks/${fresh.id}/start`,
+      ...asUser(fix.piId),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("InProgress");
+
+    // Handling + audit both record "start"
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/risks/${fresh.id}`,
+      ...asUser(fix.piId),
+    });
+    const body = detail.json();
+    expect(body.handling.map((h: { action: string }) => h.action)).toContain("start");
+    expect(body.auditTrail.map((a: { action: string }) => a.action)).toContain("start");
+  });
+
+  it("start: Open→InProgress rejected 409 (must be Assigned first)", async () => {
+    const fresh = await prisma().riskSignal.create({
+      data: {
+        projectId: (await prisma().subject.findUnique({ where: { id: fix.subjectId } }))!.projectId,
+        level: RiskLevel.Low,
+        type: "数据质量",
+        objectType: "Subject",
+        objectId: fix.subjectId,
+        subjectId: fix.subjectId,
+        trigger: "Start guard Open",
+        status: RiskStatus.Open,
+        ownerUserId: fix.piId,
+      },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/risks/${fresh.id}/start`,
+      ...asUser(fix.piId),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("STATE_TRANSITION_INVALID");
+  });
+
+  it("start: Auditor (lacks RiskResolve) is denied 403", async () => {
+    const fresh = await prisma().riskSignal.create({
+      data: {
+        projectId: (await prisma().subject.findUnique({ where: { id: fix.subjectId } }))!.projectId,
+        level: RiskLevel.Low,
+        type: "数据质量",
+        objectType: "Subject",
+        objectId: fix.subjectId,
+        subjectId: fix.subjectId,
+        trigger: "Start RBAC test",
+        status: RiskStatus.Assigned,
+        ownerUserId: fix.piId,
+      },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/risks/${fresh.id}/start`,
+      ...asUser(fix.auditorId),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
   /* ─── Resolve ───────────────────────────────────────────────── */
 
-  it("resolve: PI walks Open→Assigned→InProgress→Resolved with reason", async () => {
-    // Create a fresh risk and walk it through the legal state machine.
+  it("resolve: PI walks Open→assign→start→Resolved with reason (full HTTP path)", async () => {
+    // Create a fresh risk and walk it through the legal state machine via API only.
     const fresh = await prisma().riskSignal.create({
       data: {
         projectId: (await prisma().subject.findUnique({ where: { id: fix.subjectId } }))!.projectId,
@@ -381,13 +472,13 @@ describe("Risk routes", () => {
       ...asUser(fix.piId),
       payload: { ownerUserId: fix.piId },
     });
-    // InProgress is the work-in-flight state; the API has no explicit
-    // endpoint for entering it (it's set when the owner picks up the
-    // assignment), so we drive it through the database.
-    await prisma().riskSignal.update({
-      where: { id: fresh.id },
-      data: { status: RiskStatus.InProgress },
+    const startRes = await app.inject({
+      method: "POST",
+      url: `/api/risks/${fresh.id}/start`,
+      ...asUser(fix.piId),
     });
+    expect(startRes.statusCode).toBe(200);
+    expect(startRes.json().status).toBe("InProgress");
     const res = await app.inject({
       method: "POST",
       url: `/api/risks/${fresh.id}/resolve`,
@@ -425,7 +516,7 @@ describe("Risk routes", () => {
 
   /* ─── Close ─────────────────────────────────────────────────── */
 
-  it("close: CROPM can Resolved→Closed with reason (RiskClose is CROPM/Sponsor)", async () => {
+  it("close: CROPM can Resolved→Closed with reason (RiskClose is CROPM-only)", async () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/risks/${fix.resolvedRiskId}/close`,
@@ -460,7 +551,7 @@ describe("Risk routes", () => {
     expect(res.statusCode).toBe(422);
   });
 
-  it("close: PI (lacks RiskClose) is denied 403; only CROPM/Sponsor can close", async () => {
+  it("close: PI (lacks RiskClose) is denied 403; only CROPM can close", async () => {
     const fresh = await prisma().riskSignal.create({
       data: {
         projectId: (await prisma().subject.findUnique({ where: { id: fix.subjectId } }))!.projectId,
@@ -485,7 +576,7 @@ describe("Risk routes", () => {
 
   /* ─── Reject ────────────────────────────────────────────────── */
 
-  it("reject: CROPM can Open→Rejected with reason (RiskClose is CROPM/Sponsor)", async () => {
+  it("reject: CROPM can Open→Rejected with reason (RiskClose is CROPM-only)", async () => {
     // Create a fresh Open risk to reject
     const fresh = await prisma().riskSignal.create({
       data: {
@@ -566,14 +657,13 @@ describe("Risk routes", () => {
       ...asUser(fix.piId),
       payload: { ownerUserId: fix.piId },
     });
-    // Walk the state machine cleanly: Assigned → InProgress (via direct
-    // prisma update — there's no explicit endpoint for it; the API only
-    // exposes the user-facing transitions and the InProgress transition
-    // is reached when the assignee picks up the work).
-    await prisma().riskSignal.update({
-      where: { id: fresh.id },
-      data: { status: RiskStatus.InProgress },
+    // Full HTTP path: Assigned → start → InProgress → resolve → close
+    const startRes = await app.inject({
+      method: "POST",
+      url: `/api/risks/${fresh.id}/start`,
+      ...asUser(fix.piId),
     });
+    expect(startRes.statusCode).toBe(200);
     await app.inject({
       method: "POST",
       url: `/api/risks/${fresh.id}/resolve`,
@@ -594,10 +684,12 @@ describe("Risk routes", () => {
     const body = detail.json();
     const handlingActions = body.handling.map((h: { action: string }) => h.action);
     expect(handlingActions).toContain("assign");
+    expect(handlingActions).toContain("start");
     expect(handlingActions).toContain("resolve");
     expect(handlingActions).toContain("close");
     const auditActions = body.auditTrail.map((a: { action: string }) => a.action);
     expect(auditActions).toContain("assign");
+    expect(auditActions).toContain("start");
     expect(auditActions).toContain("resolve");
     expect(auditActions).toContain("close");
   });

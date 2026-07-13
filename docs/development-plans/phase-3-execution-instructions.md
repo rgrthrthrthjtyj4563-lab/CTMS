@@ -177,15 +177,18 @@ Phase 3 涉及的模型已全部在 Phase 0 建好：
 - `GET /api/risks` — 列表（分页 + projectId/level/status/type/ownerId 过滤）
 - `GET /api/risks/:riskId` — 详情（含 handling records + 审计链 + 关联 AIOutput）
 - `POST /api/risks/:riskId/assign` — 分配（Open→Assigned，需 ownerId）
-- `POST /api/risks/:riskId/resolve` — 解决（InProgress/PendingInvestigator→Resolved，需 reason）
+- `POST /api/risks/:riskId/start` — 开始处理（Assigned→InProgress；补齐主路径环）
+- `POST /api/risks/:riskId/resolve` — 解决（InProgress/PendingInvestigator→Resolved，可选 reason）
 - `POST /api/risks/:riskId/close` — 关闭（Resolved→Closed，需 reason，high/critical 级别强制）
 - `POST /api/risks/:riskId/reject` — 拒绝（Open/Assigned→Rejected，需 reason）
 
 关键守卫：
 - `RiskStatus` 转换用 `canTransition(RISK_STATUS_TRANSITIONS, from, to)`
 - high/critical 级别的 close 和 reject 需 `reason`（CRITICAL_AUDIT_PAIRS 已定义）
-- assign 需要 `RiskAssign` 权限，close 需要 `RiskClose` 权限
+- assign 需要 `RiskAssign`；start/resolve 需要 `RiskResolve`；close/reject 需要 `RiskClose`
+- **RiskClose 仅 CROPM**（SponsorAdmin 有 RiskResolve，无 RiskClose）
 - 所有写操作写 AuditEvent + RiskHandlingRecord
+- 主路径（HTTP）：Open → assign → start → resolve → close
 
 **Web：`apps/web/src/routes/RiskMonitorPage.tsx`**
 

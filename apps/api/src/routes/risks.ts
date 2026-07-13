@@ -4,6 +4,7 @@
  *   GET    /api/risks                       — list with pagination + filters
  *   GET    /api/risks/:riskId               — detail + handling records + audit chain + linked AIOutput
  *   POST   /api/risks/:riskId/assign        — assign to a user (Open→Assigned)
+ *   POST   /api/risks/:riskId/start         — start handling (Assigned→InProgress)
  *   POST   /api/risks/:riskId/resolve       — resolve (InProgress/PendingInvestigator→Resolved, optional reason)
  *   POST   /api/risks/:riskId/close         — close (Resolved→Closed, requires reason; high/critical level enforced)
  *   POST   /api/risks/:riskId/reject        — reject (Open/Assigned→Rejected, requires reason)
@@ -11,6 +12,7 @@
  * RBAC: each write goes through domain's Permission matrix (RiskAssign /
  * RiskResolve / RiskClose). Read paths use RiskRead; Auditor / CRA / Sponsor /
  * CRO / SitePI / SiteCRC all hold it. Subject role does not.
+ * RiskClose is CROPM-only (SponsorAdmin has RiskResolve but not RiskClose).
  *
  * Lifecycle is guarded by RISK_STATUS_TRANSITIONS. Close + Reject are
  * critical mutations that require a reason (CRITICAL_AUDIT_PAIRS covers it
@@ -19,6 +21,10 @@
  * history) and an AuditEvent (the audit chain). RiskSignal.Confirm is the
  * critical close action; we map "close" to AuditAction.Close to ensure the
  * AuditEvent tuple is in CRITICAL_AUDIT_PAIRS.
+ *
+ * Start aligns with protocol activate: audit is written before the status
+ * mutate so a failed audit cannot leave state half-applied. Close/reject
+ * still mutate-then-audit (known debt; not blocking Round 1 Full Pass).
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -324,6 +330,44 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     ]);
     return { id: updated.id, status: updated.status, ownerUserId: updated.ownerUserId };
   });
+
+  /* ─── Start (Assigned → InProgress) ───────────────────── */
+  app.post<{ Params: { riskId: string } }>(
+    "/api/risks/:riskId/start",
+    async (req) => {
+      const user = await requireUser(req);
+      authorize(user, Permission.RiskResolve, { requestId: req.id });
+      const risk = await loadRiskScoped(user, req.params.riskId);
+      assertRiskTransition(risk.status, RiskStatus.InProgress);
+      // Audit-before-mutate (protocol activate pattern): ensure the audit
+      // chain accepts the transition before flipping status. Start has no
+      // required reason, but the ordering still protects against half-applied
+      // state if audit persistence fails.
+      await audit(
+        req,
+        user,
+        "start",
+        "RiskSignal",
+        risk.id,
+        { to: RiskStatus.InProgress },
+        { beforeValue: { status: risk.status } },
+      );
+      const updated = await prisma().riskSignal.update({
+        where: { id: risk.id },
+        data: { status: RiskStatus.InProgress },
+      });
+      await prisma().riskHandlingRecord.create({
+        data: {
+          riskSignalId: risk.id,
+          actorUserId: user.userId,
+          action: "start",
+          fromStatus: risk.status,
+          toStatus: RiskStatus.InProgress,
+        },
+      });
+      return { id: updated.id, status: updated.status };
+    },
+  );
 
   /* ─── Resolve (InProgress/PendingInvestigator → Resolved) ── */
   app.post<{
