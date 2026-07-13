@@ -234,6 +234,92 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AuditEvent' }
 
+    Document:
+      type: object
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        title: { type: string }
+        category: { type: string, enum: [Protocol, ICF, Manual, EthicsApproval, VisitForm, SAEReport, Other] }
+        currentVersionId: { type: string, nullable: true }
+        uploadedByUserId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    DocumentListResponse:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Document' }
+
+    DocumentVersion:
+      type: object
+      properties:
+        id: { type: string }
+        documentId: { type: string }
+        version: { type: string }
+        fileUrl: { type: string }
+        sha256: { type: string }
+        uploadedByUserId: { type: string }
+        uploadedAt: { type: string, format: date-time }
+        isCurrent: { type: boolean }
+
+    DocumentDetail:
+      type: object
+      properties:
+        document: { $ref: '#/components/schemas/Document' }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/DocumentVersion' }
+        auditTrail:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEvent' }
+
+    DocumentVersionsResponse:
+      type: object
+      properties:
+        documentId: { type: string }
+        currentVersionId: { type: string, nullable: true }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/DocumentVersion' }
+
+    AuditObjectType:
+      type: string
+      enum: [Project, ProtocolVersion, Subject, Consent, Visit, QuestionnaireResponse, SafetyEvent, RiskSignal, DrugShipment, SampleTransfer, ReportDraft, ExportRecord, Document, AIConfig, AIOutput, User, AuditExport]
+
+    AuditEventListResponse:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEvent' }
+
+    AuditExportRecord:
+      type: object
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        objectType: { type: string }
+        format: { type: string, enum: [CSV, PDF, XLSX, JSON] }
+        reason: { type: string }
+        exportedByUserId: { type: string }
+        exportedAt: { type: string, format: date-time }
+
+    AuditExportListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditExportRecord' }
+
 security:
   - bearerAuth: []
 
@@ -1097,21 +1183,62 @@ paths:
     get:
       summary: List documents
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: projectId, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string, enum: [Protocol, ICF, Manual, EthicsApproval, VisitForm, SAEReport, Other] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/DocumentListResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
     post:
-      summary: Create document
+      summary: Create a document (DocumentUpload; requires title + category)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, category]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+                category: { type: string, enum: [Protocol, ICF, Manual, EthicsApproval, VisitForm, SAEReport, Other] }
+                initialVersion:
+                  type: object
+                  properties:
+                    version: { type: string, minLength: 1, maxLength: 40, default: v1 }
+                    fileUrl: { type: string, minLength: 1, maxLength: 2000 }
+                    sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        '200':
+          description: Document created (audited)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+
+  /api/documents/{documentId}:
+    parameters:
+      - { name: documentId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Document detail + versions + audit chain
       security: [{ bearerAuth: [] }]
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/DocumentDetail' }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '404': { description: Not Found, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
   /api/documents/{documentId}/versions:
     parameters:
@@ -1120,20 +1247,34 @@ paths:
       summary: List document versions
       security: [{ bearerAuth: [] }]
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/DocumentVersionsResponse' }
     post:
-      summary: Upload new document version
+      summary: Upload a new document version (DocumentVersion; auditable)
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, fileUrl, sha256]
+              properties:
+                version: { type: string, minLength: 1, maxLength: 40 }
+                fileUrl: { type: string, minLength: 1, maxLength: 2000 }
+                sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: New version created and promoted to current
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/DocumentVersion' }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '409': { description: Version label already exists, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
   /api/ai/configs:
     get:
@@ -1238,36 +1379,38 @@ paths:
 
   /api/audit/events:
     get:
-      summary: List audit events (audit/regulator only)
+      summary: List audit events (project-scoped, AuditRead)
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: projectId, in: query, schema: { type: string } }
+        - { name: objectType, in: query, schema: { $ref: '#/components/schemas/AuditObjectType' } }
+        - { name: action, in: query, schema: { type: string, maxLength: 80 } }
+        - { name: actorUserId, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
-    post:
-      summary: Write an audit event
-      security: [{ bearerAuth: [] }]
-      responses:
-        '501':
-          description: Not implemented in Phase 0
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AuditEventListResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
   /api/audit/exports:
     get:
-      summary: List audit exports
+      summary: List audit exports (project-scoped)
       security: [{ bearerAuth: [] }]
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AuditExportListResponse' }
     post:
-      summary: Create audit export (audited, reason required)
+      summary: Create an audit export (AuditExport; reason required; ExportRecord + AuditEvent)
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1275,14 +1418,24 @@ paths:
           application/json:
             schema:
               type: object
-              required: [reason, filters, format]
+              required: [reason, format]
               properties:
-                reason: { type: string }
-                filters: { type: object, additionalProperties: true }
-                format: { type: string, enum: [CSV, PDF, XLSX, JSON] }
+                reason: { type: string, minLength: 1, maxLength: 2000 }
+                format: { type: string, enum: [CSV, PDF, XLSX, JSON], default: PDF }
+                filters:
+                  type: object
+                  properties:
+                    projectId: { type: string }
+                    objectType: { $ref: '#/components/schemas/AuditObjectType' }
+                    action: { type: string, maxLength: 80 }
+                    actorUserId: { type: string }
+                    from: { type: string, format: date-time }
+                    to: { type: string, format: date-time }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: ExportRecord created and audited
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AuditExportRecord' }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }

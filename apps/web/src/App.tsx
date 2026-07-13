@@ -14,11 +14,13 @@ import { SafetyEventDetailPage } from "./routes/SafetyEventDetailPage.js";
 import { RiskMonitorPage } from "./routes/RiskMonitorPage.js";
 import { ProtocolPage } from "./routes/ProtocolPage.js";
 import { ReportsPage } from "./routes/ReportsPage.js";
+import { DocumentsPage } from "./routes/DocumentsPage.js";
+import { DocumentsAuditPage } from "./routes/DocumentsAuditPage.js";
 import { AppShell } from "./components/app/AppShell.js";
 import { Toaster } from "./components/ui/Toast.js";
 import { loadSession, type Session } from "./lib/session.js";
 
-const ROUTE_PHASE: Record<string, { title: string; phase: "Phase 2" | "Phase 3" | "Phase 4"; description: string }> = {
+const ROUTE_PHASE: Record<string, { title: string; phase?: "Phase 2" | "Phase 3" | "Phase 4"; description: string }> = {
   "/app/protocol": {
     title: "AI 方案解析",
     phase: "Phase 3",
@@ -56,8 +58,11 @@ const ROUTE_PHASE: Record<string, { title: string; phase: "Phase 2" | "Phase 3" 
   },
   "/app/documents": {
     title: "文档与稽查",
-    phase: "Phase 2",
-    description: "试验主文档、稽查追踪、版本控制。",
+    description: "试验主文档、版本控制、审计追踪。",
+  },
+  "/app/documents-audit": {
+    title: "审计日志",
+    description: "全项目审计事件流、合规导出（21 CFR Part 11）。",
   },
   "/app/ai-config": {
     title: "AI 中台配置",
@@ -182,6 +187,22 @@ function ReportsRoute() {
   );
 }
 
+function DocumentsRoute() {
+  return (
+    <RequireAuth>
+      <DocumentsPage />
+    </RequireAuth>
+  );
+}
+
+function DocumentsAuditRoute() {
+  return (
+    <RequireAuth>
+      <DocumentsAuditPage />
+    </RequireAuth>
+  );
+}
+
 function PlaceholderRoute() {
   const location = useLocation();
   const cfg = ROUTE_PHASE[location.pathname];
@@ -210,6 +231,8 @@ export function App() {
         <Route path="/app/risk-monitor" element={<RiskMonitorRoute />} />
         <Route path="/app/protocol" element={<ProtocolRoute />} />
         <Route path="/app/reports" element={<ReportsRoute />} />
+        <Route path="/app/documents" element={<DocumentsRoute />} />
+        <Route path="/app/documents-audit" element={<DocumentsAuditRoute />} />
         {Object.keys(ROUTE_PHASE)
           .filter(
             (p) =>
@@ -219,7 +242,9 @@ export function App() {
               p !== "/app/epro" &&
               p !== "/app/protocol" &&
               p !== "/app/risk-monitor" &&
-              p !== "/app/reports"
+              p !== "/app/reports" &&
+              p !== "/app/documents" &&
+              p !== "/app/documents-audit"
           )
           .map((path) => (
             <Route key={path} path={path} element={<PlaceholderRoute />} />

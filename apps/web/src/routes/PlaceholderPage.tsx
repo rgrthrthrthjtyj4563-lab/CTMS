@@ -2,7 +2,7 @@ import { Construction } from "lucide-react";
 
 export interface PlaceholderPageProps {
   title: string;
-  phase: "Phase 2" | "Phase 3" | "Phase 4";
+  phase?: "Phase 2" | "Phase 3" | "Phase 4";
   description: string;
 }
 
@@ -17,12 +17,14 @@ export function PlaceholderPage({ title, phase, description }: PlaceholderPagePr
       </div>
       <h1 className="text-lg font-semibold text-slate-800 mb-1">{title}</h1>
       <p className="text-sm text-slate-500 max-w-md">{description}</p>
-      <div
-        className="mt-4 px-2.5 py-0.5 rounded-full text-xs font-medium"
-        style={{ background: "var(--secondary)", color: "var(--primary)" }}
-      >
-        计划交付：{phase}
-      </div>
+      {phase ? (
+        <div
+          className="mt-4 px-2.5 py-0.5 rounded-full text-xs font-medium"
+          style={{ background: "var(--secondary)", color: "var(--primary)" }}
+        >
+          计划交付：{phase}
+        </div>
+      ) : null}
     </div>
   );
 }
