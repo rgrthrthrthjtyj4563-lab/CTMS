@@ -13,6 +13,7 @@ import { SafetyEventsPage } from "./routes/SafetyEventsPage.js";
 import { SafetyEventDetailPage } from "./routes/SafetyEventDetailPage.js";
 import { RiskMonitorPage } from "./routes/RiskMonitorPage.js";
 import { ProtocolPage } from "./routes/ProtocolPage.js";
+import { ReportsPage } from "./routes/ReportsPage.js";
 import { AppShell } from "./components/app/AppShell.js";
 import { Toaster } from "./components/ui/Toast.js";
 import { loadSession, type Session } from "./lib/session.js";
@@ -173,6 +174,14 @@ function ProtocolRoute() {
   );
 }
 
+function ReportsRoute() {
+  return (
+    <RequireAuth>
+      <ReportsPage />
+    </RequireAuth>
+  );
+}
+
 function PlaceholderRoute() {
   const location = useLocation();
   const cfg = ROUTE_PHASE[location.pathname];
@@ -200,6 +209,7 @@ export function App() {
         <Route path="/app/ae-sae/:eventId" element={<SafetyEventDetailRoute />} />
         <Route path="/app/risk-monitor" element={<RiskMonitorRoute />} />
         <Route path="/app/protocol" element={<ProtocolRoute />} />
+        <Route path="/app/reports" element={<ReportsRoute />} />
         {Object.keys(ROUTE_PHASE)
           .filter(
             (p) =>
@@ -208,7 +218,8 @@ export function App() {
               p !== "/app/remote-visit" &&
               p !== "/app/epro" &&
               p !== "/app/protocol" &&
-              p !== "/app/risk-monitor"
+              p !== "/app/risk-monitor" &&
+              p !== "/app/reports"
           )
           .map((path) => (
             <Route key={path} path={path} element={<PlaceholderRoute />} />

@@ -8,6 +8,9 @@ describe("worker skeleton", () => {
   it("classifies risk scan jobs", () => {
     expect(classifyJob({ name: "ai.risk.scan", payload: {} })).toBe("RiskSignal");
   });
+  it("classifies report draft jobs", () => {
+    expect(classifyJob({ name: "ai.report.draft", payload: {} })).toBe("ReportDraft");
+  });
   it("returns unknown for unmapped jobs", () => {
     expect(classifyJob({ name: "noop", payload: {} })).toBe("unknown");
   });

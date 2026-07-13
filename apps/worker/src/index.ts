@@ -1,13 +1,14 @@
 /**
  * Phase 3 worker entrypoint.
  *
- * Runs an in-process setInterval poll loop (no BullMQ/Redis). Today it
- * drives the protocol-parse queue (Task 3.3); future phases extend
- * classifyJob() / runJob() with risk-scan / report-generation jobs.
+ * Runs an in-process setInterval poll loop (no BullMQ/Redis). It drives
+ * the protocol-parse queue (Task 3.3) and the report-generation queue
+ * (Task 3.4). Future phases extend with risk-scan jobs.
  */
 import { PrismaClient } from "@prisma/client";
 import { AIOutputKind, formatConfidence } from "@aic-dct/domain";
 import { startProtocolScanLoop } from "./scan-loop.js";
+import { startReportScanLoop } from "./report-scan-loop.js";
 
 export interface WorkerJob {
   name: string;
@@ -17,6 +18,7 @@ export interface WorkerJob {
 export function classifyJob(job: WorkerJob): string {
   if (job.name === "ai.parse.protocol") return AIOutputKind.ProtocolParse;
   if (job.name === "ai.risk.scan") return AIOutputKind.RiskSignal;
+  if (job.name === "ai.report.draft") return AIOutputKind.ReportDraft;
   return "unknown";
 }
 
@@ -27,9 +29,11 @@ export function describeConfidence(value: number): string {
 if (typeof process !== "undefined" && process.argv[1]?.endsWith("index.js")) {
   const prisma = new PrismaClient();
   console.log("[worker] Phase 3 worker started. setInterval poll loop (no BullMQ/Redis).");
-  const stop = startProtocolScanLoop(prisma);
+  const stopProtocol = startProtocolScanLoop(prisma);
+  const stopReport = startReportScanLoop(prisma);
   const shutdown = async (): Promise<void> => {
-    stop();
+    stopProtocol();
+    stopReport();
     await prisma.$disconnect();
     process.exit(0);
   };
