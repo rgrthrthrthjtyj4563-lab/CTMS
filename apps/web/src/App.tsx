@@ -43,11 +43,6 @@ const ROUTE_PHASE: Record<string, { title: string; phase: "Phase 2" | "Phase 3" 
     phase: "Phase 2",
     description: "患者报告结局、量表回收、缺项提醒。",
   },
-  "/app/risk-monitor": {
-    title: "AI 风险监查",
-    phase: "Phase 3",
-    description: "基于全项目数据的 AI 风险聚合、归因分析。",
-  },
   "/app/drugs": {
     title: "药品与样本",
     phase: "Phase 2",
@@ -212,7 +207,8 @@ export function App() {
               p !== "/app/econsent" &&
               p !== "/app/remote-visit" &&
               p !== "/app/epro" &&
-              p !== "/app/protocol"
+              p !== "/app/protocol" &&
+              p !== "/app/risk-monitor"
           )
           .map((path) => (
             <Route key={path} path={path} element={<PlaceholderRoute />} />
