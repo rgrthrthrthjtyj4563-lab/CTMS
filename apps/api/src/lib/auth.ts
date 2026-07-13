@@ -34,6 +34,11 @@ export interface AuthenticatedUser {
   projectId: string;
   displayName: string;
   projectIdSource: "roleAssignment" | "query";
+  /** All role assignments the user holds. Used for project-isolation
+   *  checks: a SponsorAdmin with multiple projects can opt into
+   *  cross-project reads by passing an explicit projectId that appears
+   *  in this list. A user with a single assignment is hard-scoped. */
+  roleAssignments: ReadonlyArray<{ projectId: string; role: Role }>;
 }
 
 export async function requireUser(req: FastifyRequest): Promise<AuthenticatedUser> {
@@ -43,7 +48,7 @@ export async function requireUser(req: FastifyRequest): Promise<AuthenticatedUse
   }
   const user = await prisma().user.findUnique({
     where: { id: userId },
-    include: { roleAssignments: { orderBy: { assignedAt: "asc" }, take: 1 } },
+    include: { roleAssignments: { orderBy: { assignedAt: "asc" } } },
   });
   if (!user || user.roleAssignments.length === 0) {
     throw new ApiErrorException(ApiErrorCode.UNAUTHORIZED, "Unknown or unassigned user", { requestId: req.id });
@@ -55,7 +60,64 @@ export async function requireUser(req: FastifyRequest): Promise<AuthenticatedUse
     projectId: assignment.projectId ?? "",
     displayName: user.displayName,
     projectIdSource: "roleAssignment",
+    roleAssignments: user.roleAssignments.map((a) => ({
+      projectId: a.projectId ?? "",
+      role: a.role as Role,
+    })),
   };
+}
+
+/**
+ * Determine which project a list/export endpoint should query.
+ *
+ *  - If the caller supplies a `queryProjectId` and it appears in
+ *    `user.roleAssignments`, return it. This is the cross-project escape
+ *    hatch for Sponsor/CRO roles that legitimately cover multiple
+ *    studies (rare in the mock data set but common in real-world
+ *    Sponsor/CRO setups).
+ *  - Otherwise scope to `user.projectId` (the first assignment, which
+ *    is the auth context).
+ *  - If a `queryProjectId` is supplied but the caller has no
+ *    assignment for it, throw 403 — this prevents the ?projectId=<other>
+ *    IDOR identified by the architect review.
+ */
+export function resolveProjectScope(
+  user: AuthenticatedUser,
+  queryProjectId: string | undefined,
+  requestId: string,
+): string {
+  if (!queryProjectId) return user.projectId;
+  if (queryProjectId === user.projectId) return user.projectId;
+  const allowed = user.roleAssignments.some((a) => a.projectId === queryProjectId);
+  if (!allowed) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "Caller is not assigned to the requested project",
+      { requestId, details: { requestedProjectId: queryProjectId } },
+    );
+  }
+  return queryProjectId;
+}
+
+/**
+ * Hard check that a target projectId is reachable by the caller.
+ * Used by detail/mutate endpoints where the target is the document/
+ * report's own projectId and a misroute would leak data.
+ */
+export function assertProjectAccess(
+  user: AuthenticatedUser,
+  targetProjectId: string,
+  requestId: string,
+): void {
+  if (targetProjectId === user.projectId) return;
+  const allowed = user.roleAssignments.some((a) => a.projectId === targetProjectId);
+  if (!allowed) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "Object belongs to a project the caller is not assigned to",
+      { requestId, details: { targetProjectId } },
+    );
+  }
 }
 
 function readHeader(req: FastifyRequest, name: string): string | null {
@@ -108,7 +170,7 @@ export async function audit(
   objectType: string,
   objectId: string,
   details: Record<string, unknown> = {},
-  options: { beforeValue?: unknown; reason?: string } = {},
+  options: { beforeValue?: unknown; reason?: string; projectId?: string } = {},
 ): Promise<void> {
   const meta = criticalActionMeta(
     objectType as AuditObjectType,
@@ -125,7 +187,53 @@ export async function audit(
   }
   await prisma().auditEvent.create({
     data: {
-      projectId: user.projectId,
+      projectId: options.projectId ?? user.projectId,
+      actorUserId: user.userId,
+      actorRole: user.role,
+      action,
+      objectType,
+      objectId,
+      beforeValue: (options.beforeValue ?? null) as object,
+      afterValue: details as object,
+      reason: options.reason ?? null,
+      requestId: req.id,
+    },
+  });
+}
+
+/**
+ * Transactional variant of `audit()`. Use this inside
+ * `prisma.$transaction([...])` blocks so the audit event rolls back
+ * together with the data mutation if the transaction fails. Critical
+ * (objectType, action) reason enforcement is identical to the
+ * non-tx helper.
+ */
+export async function auditTx(
+  tx: Pick<ReturnType<typeof prisma>, "auditEvent">,
+  req: FastifyRequest,
+  user: AuthenticatedUser,
+  action: string,
+  objectType: string,
+  objectId: string,
+  details: Record<string, unknown> = {},
+  options: { beforeValue?: unknown; reason?: string; projectId?: string } = {},
+): Promise<void> {
+  const meta = criticalActionMeta(
+    objectType as AuditObjectType,
+    action as Parameters<typeof criticalActionMeta>[1],
+  );
+  if (meta?.requiresReason) {
+    if (!options.reason || options.reason.trim().length === 0) {
+      throw new ApiErrorException(
+        ApiErrorCode.REASON_REQUIRED,
+        `Audit event for ${objectType}.${action} requires a non-empty reason.`,
+        { requestId: req.id, details: { objectType, action } },
+      );
+    }
+  }
+  await tx.auditEvent.create({
+    data: {
+      projectId: options.projectId ?? user.projectId,
       actorUserId: user.userId,
       actorRole: user.role,
       action,

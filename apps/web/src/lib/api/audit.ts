@@ -78,6 +78,12 @@ export async function createAuditExport(body: {
     from?: string;
     to?: string;
   };
-}): Promise<AuditExportRecord> {
+}): Promise<
+  AuditExportRecord & {
+    eventCount: number;
+    eventIdsTruncated: boolean;
+    contentHash: string;
+  }
+> {
   return apiPost("/api/audit/exports", body);
 }

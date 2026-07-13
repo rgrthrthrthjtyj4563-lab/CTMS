@@ -55,8 +55,8 @@ Legend:
 | report:confirm | ✅ | ✅ |  |  |  |  |  |  |  |  | ✅ |
 | report:export | ✅ | ✅ |  |  |  |  |  |  |  |  | ✅ |
 | document:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  | ✅ | ✅ |
-| document:upload |  |  |  |  |  |  |  |  |  |  | ✅ |
-| document:version |  |  |  |  |  |  |  |  |  |  | ✅ |
+| document:upload | ✅ | ✅ | ✅ |  |  |  |  |  |  |  | ✅ |
+| document:version | ✅ | ✅ | ✅ |  |  |  |  |  |  |  | ✅ |
 | ai:config.read | ✅ | ✅ |  |  |  | ✅ |  |  |  |  | ✅ |
 | ai:config.update |  |  |  |  |  |  |  |  |  |  | ✅ |
 | ai:output.read | ✅ | ✅ | ✅ | ✅ |  | ✅ | ✅ |  |  |  | ✅ |

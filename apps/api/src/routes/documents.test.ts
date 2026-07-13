@@ -184,6 +184,66 @@ describe("Document routes", () => {
     }
   });
 
+  // C1 (architect review): cross-project IDOR guard on the list
+  // endpoint. A caller without an assignment on the target project
+  // cannot pass ?projectId=<other> to leak documents across projects.
+  it("isolation: CRA cannot list documents of another project (403 on ?projectId=)", async () => {
+    const other = await prisma().project.create({
+      data: {
+        code: `OTHER-DOC-${RUN_TAG}`,
+        name: "Other documents project",
+        sponsor: "Test",
+        therapeuticArea: "Test",
+        phase: "II",
+        description: `${RUN_TAG}-OTHER-DOC`,
+        startDate: new Date(),
+      },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/documents?projectId=${other.id}`,
+      ...asUser(fix.craId),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("FORBIDDEN");
+    await prisma().project.delete({ where: { id: other.id } });
+  });
+
+  it("isolation: a user with assignments on two projects can list both", async () => {
+    const other = await prisma().project.create({
+      data: {
+        code: `MULTI-DOC-${RUN_TAG}`,
+        name: "Multi-project documents project",
+        sponsor: "Test",
+        therapeuticArea: "Test",
+        phase: "II",
+        description: `${RUN_TAG}-MULTI-DOC`,
+        startDate: new Date(),
+      },
+    });
+    await prisma().roleAssignment.create({
+      data: {
+        userId: fix.sponsorId,
+        projectId: other.id,
+        role: Role.SponsorAdmin,
+      },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/documents?projectId=${other.id}`,
+      ...asUser(fix.sponsorId),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    for (const item of body.items) {
+      expect(item.projectId).toBe(other.id);
+    }
+    await prisma().roleAssignment.deleteMany({
+      where: { projectId: other.id, userId: fix.sponsorId },
+    });
+    await prisma().project.delete({ where: { id: other.id } });
+  });
+
   /* ─── Detail ───────────────────────────────────────────────── */
 
   it("detail: PI sees document + versions + audit chain", async () => {
@@ -405,6 +465,7 @@ describe("Document routes", () => {
     expect(createRes.statusCode).toBe(200);
     const docId = createRes.json().id;
     const projectId = createRes.json().projectId as string;
+    const v1Id = createRes.json().currentVersionId as string;
 
     // Promote a second version. The create endpoint will write a
     // Document.update event with the version promotion; the v1 was
@@ -425,25 +486,165 @@ describe("Document routes", () => {
 
     // Query the audit chain by projectId; the fixture project holds
     // only events from this test (cleanup deletes the project) so the
-    // filter is unambiguous.
+    // filter is unambiguous. After the C2 fix, version events use
+    // objectType=Document with an afterValue.kind === "version" tag.
     const events = await prisma().auditEvent.findMany({
-      where: { projectId, objectType: { in: ["DocumentVersion", "Document"] } },
+      where: { projectId, objectType: "Document" },
       orderBy: { timestamp: "asc" },
     });
     const createEvent = events.find(
-      (e: { objectType: string; action: string; afterValue: unknown }) => {
-        if (e.objectType !== "DocumentVersion" || e.action !== "create") return false;
-        const av = e.afterValue as { documentId?: string } | null;
-        return av?.documentId === docId;
+      (e: { action: string; afterValue: unknown }) => {
+        if (e.action !== "create") return false;
+        const av = e.afterValue as { kind?: string; versionId?: string } | null;
+        return av?.kind === "version" && av?.versionId === v1Id;
       },
     );
     const updateEvent = events.find(
-      (e: { objectType: string; action: string; objectId: string }) =>
-        e.objectType === "Document" && e.action === "update" && e.objectId === docId,
+      (e: { action: string; objectId: string; afterValue: unknown }) => {
+        if (e.action !== "update" || e.objectId !== docId) return false;
+        const av = e.afterValue as { kind?: string } | null;
+        return av?.kind === "currentVersion";
+      },
     );
     expect(createEvent).toBeTruthy();
     expect(updateEvent).toBeTruthy();
     const updateAfter = updateEvent?.afterValue as { currentVersionId: string };
     expect(updateAfter?.currentVersionId).toBeTruthy();
+  });
+
+  // C2 (architect review): the audit event for an uploaded version
+  // uses objectType=Document, NOT a free-floating "DocumentVersion"
+  // string. The version payload lives in afterValue.kind="version".
+  it("C2: version-upload audit event uses objectType=Document with afterValue.kind=version", async () => {
+    const createRes = await app.inject({
+      method: "POST",
+      url: "/api/documents",
+      ...asUser(fix.sponsorId),
+      payload: {
+        title: `c2-check-${RUN_TAG}`,
+        category: "Manual",
+        initialVersion: {
+          version: "v1",
+          fileUrl: "https://files.example.test/c2-v1.pdf",
+          sha256: SHA("c2-v1"),
+        },
+      },
+    });
+    const docId = createRes.json().id;
+    const projectId = createRes.json().projectId as string;
+
+    // The audit chain MUST NOT contain any event with objectType
+    // "DocumentVersion" — that string is not in the audit taxonomy.
+    const stray = await prisma().auditEvent.findFirst({
+      where: { projectId, objectType: "DocumentVersion" },
+    });
+    expect(stray).toBeNull();
+
+    // The version event MUST be findable as objectType=Document with
+    // an afterValue.kind === "version" payload.
+    const versionEvent = await prisma().auditEvent.findFirst({
+      where: { projectId, objectType: "Document", objectId: docId, action: "create" },
+    });
+    expect(versionEvent).toBeTruthy();
+    const av = versionEvent?.afterValue as { kind?: string };
+    expect(av?.kind).toBe("version");
+  });
+
+  // M3 (architect review): the document detail endpoint surfaces the
+  // full audit chain including version events (objectType=Document with
+  // afterValue.kind === "version"). The Drawer can thus render every
+  // version promotion as a chronological event.
+  it("M3: detail page audit chain includes version events (kind=version)", async () => {
+    const createRes = await app.inject({
+      method: "POST",
+      url: "/api/documents",
+      ...asUser(fix.sponsorId),
+      payload: {
+        title: `m3-check-${RUN_TAG}`,
+        category: "Manual",
+        initialVersion: {
+          version: "v1",
+          fileUrl: "https://files.example.test/m3-v1.pdf",
+          sha256: SHA("m3-v1"),
+        },
+      },
+    });
+    const docId = createRes.json().id;
+    await app.inject({
+      method: "POST",
+      url: `/api/documents/${docId}/versions`,
+      ...asUser(fix.sponsorId),
+      payload: {
+        version: "v2",
+        fileUrl: "https://files.example.test/m3-v2.pdf",
+        sha256: SHA("m3-v2"),
+      },
+    });
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/documents/${docId}`,
+      ...asUser(fix.craId),
+    });
+    expect(detail.statusCode).toBe(200);
+    const body = detail.json();
+    // We expect at least: 2 version events (v1 + v2) + 2 currentVersion
+    // update events (the second currentVersion write carries v2). The
+    // exact count depends on order; assert at least 3 audit events
+    // including both kinds.
+    expect(body.auditTrail.length).toBeGreaterThanOrEqual(3);
+    const versionEvents = body.auditTrail.filter(
+      (a: { afterValue: { kind?: string } | null }) => a.afterValue?.kind === "version",
+    );
+    const currentVersionEvents = body.auditTrail.filter(
+      (a: { afterValue: { kind?: string } | null }) => a.afterValue?.kind === "currentVersion",
+    );
+    expect(versionEvents.length).toBeGreaterThanOrEqual(2);
+    expect(currentVersionEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // M1/M4 (architect review): the create-with-initialVersion path is
+  // atomic. We simulate a downstream failure by providing a sha256 that
+  // matches the regex (passes validation) but a fileUrl that the test
+  // // deliberately writes successfully, so we instead trigger failure
+  // by providing duplicate version label across two sequential requests.
+  // The second request must NOT leave the first partial state behind.
+  it("M4: duplicate version on a fresh document returns 409 with no half-built state", async () => {
+    const createRes = await app.inject({
+      method: "POST",
+      url: "/api/documents",
+      ...asUser(fix.sponsorId),
+      payload: {
+        title: `m4-check-${RUN_TAG}`,
+        category: "Manual",
+        initialVersion: {
+          version: "v1",
+          fileUrl: "https://files.example.test/m4-v1.pdf",
+          sha256: SHA("m4-v1"),
+        },
+      },
+    });
+    const docId = createRes.json().id;
+    // Upload v1 a second time directly. This is the only way to surface
+    // the "duplicate label" path on a single document; the first
+    // creation used initialVersion so v1 is already there.
+    const dup = await app.inject({
+      method: "POST",
+      url: `/api/documents/${docId}/versions`,
+      ...asUser(fix.sponsorId),
+      payload: {
+        version: "v1",
+        fileUrl: "https://files.example.test/m4-v1-dup.pdf",
+        sha256: SHA("m4-v1-dup"),
+      },
+    });
+    expect(dup.statusCode).toBe(409);
+    // The document must still have exactly one version. No partial
+    // state from the failed upload.
+    const versions = await prisma().documentVersion.findMany({
+      where: { documentId: docId },
+    });
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.version).toBe("v1");
   });
 });

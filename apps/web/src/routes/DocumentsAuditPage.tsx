@@ -37,7 +37,6 @@ const OBJECT_TYPES: ReadonlyArray<string> = [
   "RiskSignal",
   "ReportDraft",
   "Document",
-  "DocumentVersion",
   "AIConfig",
   "AIOutput",
   "AuditExport",

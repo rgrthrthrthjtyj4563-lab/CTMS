@@ -235,6 +235,12 @@ describe("Audit routes", () => {
     expect(body.reason).toBe("提交给 FDA 现场核查");
     expect(body.format).toBe("CSV");
     expect(body.exportedByUserId).toBe(fix.auditorId);
+    // M2: the response now surfaces the M2 compliance snapshot. The
+    // exact eventCount depends on the test ordering, but it must be
+    // present and non-negative.
+    expect(typeof body.eventCount).toBe("number");
+    expect(typeof body.contentHash).toBe("string");
+    expect(body.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
 
     // Audit chain: the export action MUST appear in the events list
     // with reason attached. This is the 21 CFR Part 11 contract.
@@ -246,6 +252,7 @@ describe("Audit routes", () => {
     const auditEvents = detail.json().items as Array<{
       objectId: string;
       reason: string | null;
+      afterValue: { contentHash?: string; eventCount?: number };
     }>;
     expect(auditEvents.some((e) => e.objectId === body.id && e.reason === body.reason)).toBe(
       true,
@@ -282,7 +289,7 @@ describe("Audit routes", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("create export writes BOTH an ExportRecord and a critical AuditEvent with reason", async () => {
+  it("create export writes BOTH an ExportRecord and a critical AuditEvent with reason + M2 snapshot", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/audit/exports",
@@ -295,6 +302,8 @@ describe("Audit routes", () => {
     });
     expect(res.statusCode).toBe(200);
     const exportRecordId = res.json().id;
+    const eventCount = res.json().eventCount as number;
+    const responseHash = res.json().contentHash as string;
 
     const [exportRecord, auditEvents] = await Promise.all([
       prisma().exportRecord.findUnique({ where: { id: exportRecordId } }),
@@ -306,8 +315,124 @@ describe("Audit routes", () => {
     expect(exportRecord?.reason).toBe("链式审计验证");
     expect(exportRecord?.format).toBe("XLSX");
     expect(exportRecord?.objectType).toBe("AuditExport");
+    // M2: ExportRecord.objectIds now carries the event id list (capped).
+    // We assert it is a non-empty array whose length matches the
+    // eventCount from the response, and that the export-record projectId
+    // matches the audit event projectId (M5).
+    expect(Array.isArray(exportRecord?.objectIds)).toBe(true);
+    const persistedIds = (exportRecord?.objectIds as string[]) ?? [];
+    expect(persistedIds.length).toBeGreaterThan(0);
+    expect(persistedIds.length).toBeLessThanOrEqual(eventCount);
     expect(auditEvents).toHaveLength(1);
     expect(auditEvents[0]?.action).toBe("export");
     expect(auditEvents[0]?.reason).toBe("链式审计验证");
+    // M5: the critical AuditEvent.projectId matches ExportRecord.projectId.
+    expect(auditEvents[0]?.projectId).toBe(exportRecord?.projectId);
+    // M2: afterValue carries the contentHash; assert it matches the
+    // response hash (we re-hashed from the same id set).
+    const auditAfter = auditEvents[0]?.afterValue as {
+      contentHash: string;
+      eventCount: number;
+      eventIdsTruncated: boolean;
+    };
+    expect(auditAfter?.contentHash).toBe(responseHash);
+    expect(auditAfter?.eventCount).toBe(eventCount);
+  });
+
+  // C1 (architect review): cross-project IDOR guard on the list and
+  // export endpoints. A caller without an assignment on the target
+  // project cannot pass `?projectId=<other>` to either endpoint.
+  it("isolation: CRA cannot read audit events of another project (403 on ?projectId=)", async () => {
+    const other = await prisma().project.create({
+      data: {
+        code: `OTHER-${RUN_TAG}`,
+        name: "Other audit project",
+        sponsor: "Test",
+        therapeuticArea: "Test",
+        phase: "II",
+        description: `${RUN_TAG}-OTHER`,
+        startDate: new Date(),
+      },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/audit/events?projectId=${other.id}`,
+      ...asUser(fix.craId),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("FORBIDDEN");
+    await prisma().project.delete({ where: { id: other.id } });
+  });
+
+  it("isolation: SponsorAdmin cannot export audit of another project they aren't assigned to (403 on filters.projectId)", async () => {
+    const other = await prisma().project.create({
+      data: {
+        code: `OTHER-EXP-${RUN_TAG}`,
+        name: "Other export project",
+        sponsor: "Test",
+        therapeuticArea: "Test",
+        phase: "II",
+        description: `${RUN_TAG}-OTHER-EXP`,
+        startDate: new Date(),
+      },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/audit/exports",
+      ...asUser(fix.sponsorId),
+      payload: {
+        reason: "尝试跨项目导出",
+        format: "PDF",
+        filters: { projectId: other.id },
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("FORBIDDEN");
+    // The export must NOT have created an ExportRecord on the other
+    // project (defense in depth — the failed call should not leave a
+    // partial artifact behind).
+    const leaked = await prisma().exportRecord.findFirst({
+      where: { projectId: other.id, reason: "尝试跨项目导出" },
+    });
+    expect(leaked).toBeNull();
+    await prisma().project.delete({ where: { id: other.id } });
+  });
+
+  it("isolation: a user with assignments on two projects can read both", async () => {
+    // Create a second project + role assignment so the sponsor holds
+    // two RoleAssignments, then verify they can list events for both.
+    const other = await prisma().project.create({
+      data: {
+        code: `MULTI-${RUN_TAG}`,
+        name: "Multi-project audit project",
+        sponsor: "Test",
+        therapeuticArea: "Test",
+        phase: "II",
+        description: `${RUN_TAG}-MULTI`,
+        startDate: new Date(),
+      },
+    });
+    await prisma().roleAssignment.create({
+      data: {
+        userId: fix.sponsorId,
+        projectId: other.id,
+        role: Role.SponsorAdmin,
+      },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/audit/events?projectId=${other.id}`,
+      ...asUser(fix.sponsorId),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.items.every((i: { projectId: string }) => i.projectId === other.id)).toBe(
+      true,
+    );
+    // Cleanup the second assignment before the fixture cleanup runs.
+    await prisma().roleAssignment.deleteMany({
+      where: { projectId: other.id, userId: fix.sponsorId },
+    });
+    await prisma().project.delete({ where: { id: other.id } });
   });
 });

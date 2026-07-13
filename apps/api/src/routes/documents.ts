@@ -1,29 +1,32 @@
 /**
- * Document Center endpoints for Phase 3 Task 3.5.
+ * Document Center endpoints for Phase 3 Task 3.5 (post-review).
  *
- *   GET    /api/documents                           — list (filter by projectId, category, q)
- *   POST   /api/documents                           — create (DocumentUpload; title, category)
- *   GET    /api/documents/:documentId               — detail + versions (newest first)
+ *   GET    /api/documents                           — list (DocumentRead)
+ *   POST   /api/documents                           — create (DocumentUpload)
+ *   GET    /api/documents/:documentId               — detail + versions + audit chain
  *   POST   /api/documents/:documentId/versions      — upload new version (DocumentVersion)
  *   GET    /api/documents/:documentId/versions      — list versions
  *
- * RBAC:
- *   - DocumentRead: SponsorAdmin / CROPM / SitePI / SiteCRC / CRA / Auditor / RegulatorReadOnly / ProviderNurse
- *   - DocumentUpload: SponsorAdmin / CROPM / SitePI
- *   - DocumentVersion: same as upload (PIs often add a new site-level revision)
+ * Audit/taxonomy (architect review fix C2/M3):
+ *   Version events use `objectType: Document` (single canonical type
+ *   per the audit taxonomy). The version-specific payload lives in
+ *   `afterValue` as `{ kind: "version", versionId, version, sha256,
+ *   fileUrl, uploadedByUserId, uploadedAt }`. The detail endpoint
+ *   merges Document audit events with version-tagged events so the
+ *   Drawer shows the full chain including every uploaded version.
  *
- * Cross-project isolation: every endpoint scopes the lookup by user.projectId
- * unless the caller supplies an explicit projectId query that matches their
- * role assignment (e.g. SponsorAdmin can read across all projects). We do
- * not allow crossing projects implicitly — a CRA on project A cannot see
- * docs on project B even if they know the title.
+ * Cross-project isolation (architect review fix C1):
+ *   - List endpoints accept `?projectId=` but only honor it when the
+ *     caller holds a role assignment on that project (resolved via
+ *     `resolveProjectScope`).
+ *   - Detail / mutate endpoints call `assertProjectAccess` against
+ *     the document's own projectId.
  *
- * Versioning: each DocumentVersion is immutable once written. The Document
- * row carries currentVersionId for cheap "latest" reads. We never delete a
- * version — supersession is captured by uploading a new version. Upload
- * writes a create audit event for the version and an update audit event
- * for the Document (currentVersionId change) so the audit chain records
- * who promoted a new version.
+ * Atomicity (architect review fix M1/M4):
+ *   - `POST /api/documents` and `POST /api/documents/:id/versions`
+ *     wrap data writes AND audit writes in a single
+ *     `prisma.$transaction([...])` so the audit chain and the data
+ *     state never diverge.
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -36,7 +39,13 @@ import {
 } from "@aic-dct/domain";
 import type { Document, DocumentVersion } from "@prisma/client";
 import { prisma } from "../db.js";
-import { audit, requireUser } from "../lib/auth.js";
+import {
+  assertProjectAccess,
+  auditTx,
+  requireUser,
+  resolveProjectScope,
+  type AuthenticatedUser,
+} from "../lib/auth.js";
 
 const DOCUMENT_CATEGORIES = [
   "Protocol",
@@ -60,8 +69,6 @@ const listQuerySchema = z.object({
 const createSchema = z.object({
   title: z.string().min(1).max(200),
   category: z.enum(DOCUMENT_CATEGORIES).default("Other"),
-  /** Optional inline first version. The user can upload a separate
-   * version later via POST /:documentId/versions. */
   initialVersion: z
     .object({
       fileUrl: z.string().min(1).max(2000),
@@ -77,10 +84,7 @@ const versionSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/, "sha256 must be 64 hex chars"),
 });
 
-async function loadDocumentScoped(
-  user: { projectId: string },
-  documentId: string,
-) {
+async function loadDocumentScoped(user: AuthenticatedUser, documentId: string) {
   const doc = await prisma().document.findUnique({
     where: { id: documentId },
   });
@@ -91,14 +95,19 @@ async function loadDocumentScoped(
       { details: { documentId } },
     );
   }
-  if (doc.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Document belongs to a different project",
-      { details: { documentId } },
-    );
-  }
+  // C1: cross-project isolation enforced against the document's own
+  // projectId. The helper throws 403 if the caller has no role
+  // assignment on doc.projectId.
+  assertProjectAccess(user, doc.projectId, reqIdForLoad());
   return doc;
+}
+
+// The detail/upload helpers carry the Fastify request id; the load
+// helper runs against a request-bound user. We thread a synthetic
+// requestId string here so assertProjectAccess can be called without
+// a FastifyRequest object — the id is only used for log correlation.
+function reqIdForLoad(): string {
+  return "document-load";
 }
 
 export function registerDocumentRoutes(app: FastifyInstance): void {
@@ -116,9 +125,14 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
           { requestId: req.id, details: { issues: parsed.error.issues } },
         );
       }
-      const { projectId, category, q, page, pageSize } = parsed.data;
+      const { projectId: queryProjectId, category, q, page, pageSize } = parsed.data;
+      // C1: scope to the caller's project unless they have a real
+      // assignment on a different one. The previous implementation
+      // honored any ?projectId= query, which leaked documents across
+      // projects to any role with DocumentRead.
+      const projectId = resolveProjectScope(user, queryProjectId, req.id);
       const where = {
-        projectId: projectId ?? user.projectId,
+        projectId,
         ...(category ? { category } : {}),
         ...(q ? { title: { contains: q, mode: "insensitive" as const } } : {}),
       };
@@ -161,6 +175,10 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
           where: { documentId: doc.id },
           orderBy: { uploadedAt: "desc" },
         }),
+        // M3: include all Document-objectType events for this id. The
+        // version events share objectId=doc.id and carry an
+        // afterValue.kind === "version" tag, so they merge naturally
+        // into the audit chain returned to the client.
         prisma().auditEvent.findMany({
           where: { objectType: "Document", objectId: doc.id },
           orderBy: { timestamp: "desc" },
@@ -200,7 +218,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     },
   );
 
-  /* ─── Create (DocumentUpload) ─────────────────────────── */
+  /* ─── Create (DocumentUpload) — atomic with version + audit ── */
   app.post<{ Body: z.infer<typeof createSchema> }>(
     "/api/documents",
     async (req) => {
@@ -215,66 +233,99 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
         );
       }
       const { title, category, initialVersion } = parsed.data;
-      // Create the row and the first version atomically. If the version
-      // payload is missing we still create the document (the user can
-      // upload a version afterwards); otherwise we set currentVersionId.
-      const created = await prisma().document.create({
-        data: {
-          projectId: user.projectId,
-          title,
-          category,
-          uploadedByUserId: user.userId,
-        },
-      });
-      let versionId: string | null = null;
+      const projectId = user.projectId;
+
+      // M4: create-document + (optional) initial version + audit event
+      // are wrapped in a single $transaction. If any step throws the
+      // whole batch rolls back, so a half-built document can never
+      // exist in the DB.
       if (initialVersion) {
-        const version = await prisma().documentVersion.create({
+        const result = await prisma().$transaction(async (tx) => {
+          const created = await tx.document.create({
+            data: {
+              projectId,
+              title,
+              category,
+              uploadedByUserId: user.userId,
+            },
+          });
+          const version = await tx.documentVersion.create({
+            data: {
+              documentId: created.id,
+              version: initialVersion.version,
+              fileUrl: initialVersion.fileUrl,
+              sha256: initialVersion.sha256,
+              uploadedByUserId: user.userId,
+            },
+          });
+          await tx.document.update({
+            where: { id: created.id },
+            data: { currentVersionId: version.id },
+          });
+          // C2: the version event uses objectType=Document; the payload
+          // tag makes it filterable on the detail page.
+          await auditTx(
+            tx,
+            req,
+            user,
+            AuditAction.Create,
+            "Document",
+            created.id,
+            {
+              kind: "version",
+              versionId: version.id,
+              version: initialVersion.version,
+              sha256: initialVersion.sha256,
+              fileUrl: initialVersion.fileUrl,
+              uploadedByUserId: user.userId,
+            },
+            { projectId },
+          );
+          return { created, version };
+        });
+        return {
+          id: result.created.id,
+          projectId: result.created.projectId,
+          title: result.created.title,
+          category: result.created.category,
+          currentVersionId: result.version.id,
+          uploadedByUserId: result.created.uploadedByUserId,
+          createdAt: result.created.createdAt.toISOString(),
+          updatedAt: result.created.updatedAt.toISOString(),
+        };
+      }
+
+      // No initial version: still atomic for the audit chain.
+      const result = await prisma().$transaction(async (tx) => {
+        const created = await tx.document.create({
           data: {
-            documentId: created.id,
-            version: initialVersion.version,
-            fileUrl: initialVersion.fileUrl,
-            sha256: initialVersion.sha256,
+            projectId,
+            title,
+            category,
             uploadedByUserId: user.userId,
           },
         });
-        versionId = version.id;
-        await prisma().document.update({
-          where: { id: created.id },
-          data: { currentVersionId: versionId },
-        });
-        await audit(
+        await auditTx(
+          tx,
           req,
           user,
           AuditAction.Create,
-          "DocumentVersion",
-          version.id,
-          {
-            documentId: created.id,
-            version: initialVersion.version,
-          },
+          "Document",
+          created.id,
+          { title: created.title, category: created.category, currentVersionId: null },
+          { projectId },
         );
-      }
-      await audit(
-        req,
-        user,
-        AuditAction.Create,
-        "Document",
-        created.id,
-        {
-          title: created.title,
-          category: created.category,
-          currentVersionId: versionId,
-        },
-      );
+        return created;
+      });
       return {
-        id: created.id,
-        projectId: created.projectId,
-        title: created.title,
-        category: created.category,
-        currentVersionId: versionId,
-        uploadedByUserId: created.uploadedByUserId,
-        createdAt: created.createdAt.toISOString(),
-        updatedAt: created.updatedAt.toISOString(),
+        id: result.id,
+        projectId: result.projectId,
+        title: result.title,
+        category: result.category,
+        currentVersionId: null,
+        uploadedByUserId: result.uploadedByUserId,
+        createdAt: result.createdAt.toISOString(),
+        updatedAt: result.updatedAt.toISOString(),
       };
     },
   );
@@ -306,7 +357,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     },
   );
 
-  /* ─── Upload new version (DocumentVersion) ────────────── */
+  /* ─── Upload new version (DocumentVersion) — atomic ──── */
   app.post<{
     Params: { documentId: string };
     Body: z.infer<typeof versionSchema>;
@@ -324,12 +375,11 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     }
     // Reject duplicate (documentId, version) tuples up-front so the
     // caller gets a clean 409 instead of a Prisma unique-constraint
-    // crash. We use exists() rather than a catch because a thrown
-    // P2002 leaks DB specifics in the 500 path.
-    const exists = await prisma().documentVersion.findFirst({
+    // crash leaking DB specifics.
+    const existing = await prisma().documentVersion.findFirst({
       where: { documentId: doc.id, version: parsed.data.version },
     });
-    if (exists) {
+    if (existing) {
       throw new ApiErrorException(
         ApiErrorCode.CONFLICT,
         `Version ${parsed.data.version} already exists for this document`,
@@ -339,51 +389,71 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
         },
       );
     }
-    // audit-before-mutate: persist the version + the Document.currentVersionId
-    // change in a single transaction, writing the create + update audit
-    // events first so a failed write leaves the document unchanged.
-    const newVersion = await prisma().documentVersion.create({
-      data: {
-        documentId: doc.id,
-        version: parsed.data.version,
-        fileUrl: parsed.data.fileUrl,
-        sha256: parsed.data.sha256,
-        uploadedByUserId: user.userId,
-      },
-    });
-    await audit(
-      req,
-      user,
-      AuditAction.Create,
-      "DocumentVersion",
-      newVersion.id,
-      {
-        documentId: doc.id,
-        version: newVersion.version,
-        sha256: newVersion.sha256,
-      },
-    );
-    await audit(
-      req,
-      user,
-      AuditAction.Update,
-      "Document",
-      doc.id,
-      { currentVersionId: newVersion.id, version: newVersion.version },
-      { beforeValue: { currentVersionId: doc.currentVersionId } },
-    );
-    await prisma().document.update({
-      where: { id: doc.id },
-      data: { currentVersionId: newVersion.id },
+    // M1: version create + Document.update + 2 audit events wrapped in
+    // a single $transaction. If the tx throws, no version is
+    // persisted and no audit events are written, so the audit chain
+    // and the data state never diverge.
+    const result = await prisma().$transaction(async (tx) => {
+      const newVersion = await tx.documentVersion.create({
+        data: {
+          documentId: doc.id,
+          version: parsed.data.version,
+          fileUrl: parsed.data.fileUrl,
+          sha256: parsed.data.sha256,
+          uploadedByUserId: user.userId,
+        },
+      });
+      await tx.document.update({
+        where: { id: doc.id },
+        data: { currentVersionId: newVersion.id },
+      });
+      // C2: version event uses objectType=Document; payload is tagged
+      // so the detail page can distinguish "create version" from
+      // "update currentVersionId".
+      await auditTx(
+        tx,
+        req,
+        user,
+        AuditAction.Create,
+        "Document",
+        doc.id,
+        {
+          kind: "version",
+          versionId: newVersion.id,
+          version: newVersion.version,
+          sha256: newVersion.sha256,
+          fileUrl: newVersion.fileUrl,
+          uploadedByUserId: user.userId,
+        },
+        { projectId: doc.projectId },
+      );
+      await auditTx(
+        tx,
+        req,
+        user,
+        AuditAction.Update,
+        "Document",
+        doc.id,
+        {
+          kind: "currentVersion",
+          currentVersionId: newVersion.id,
+          version: newVersion.version,
+        },
+        {
+          beforeValue: { currentVersionId: doc.currentVersionId },
+          projectId: doc.projectId,
+        },
+      );
+      return newVersion;
     });
     return {
-      id: newVersion.id,
+      id: result.id,
       documentId: doc.id,
-      version: newVersion.version,
-      fileUrl: newVersion.fileUrl,
-      sha256: newVersion.sha256,
-      uploadedByUserId: newVersion.uploadedByUserId,
-      uploadedAt: newVersion.uploadedAt.toISOString(),
+      version: result.version,
+      fileUrl: result.fileUrl,
+      sha256: result.sha256,
+      uploadedByUserId: result.uploadedByUserId,
+      uploadedAt: result.uploadedAt.toISOString(),
       isCurrent: true,
     };
   });

@@ -1,29 +1,30 @@
 /**
- * Audit endpoints for Phase 3 Task 3.5.
+ * Audit endpoints for Phase 3 Task 3.5 (post-review).
  *
- *   GET    /api/audit/events                 — list (AuditRead; filter by projectId/objectType/action/actor/from/to)
+ *   GET    /api/audit/events                 — list (AuditRead; project-scoped)
  *   GET    /api/audit/exports                — list audit exports
- *   POST   /api/audit/exports                — create audit export (AuditExport, reason required; ExportRecord + AuditEvent)
+ *   POST   /api/audit/exports                — create export (AuditExport; reason required)
  *
- * The audit log is append-only. We expose a single list endpoint that is
- * scoped to the user's project. SponsorAdmin / CROPM can read across
- * projects only by supplying an explicit projectId query. Auditors and
- * regulators get a per-project view restricted to AuditRead.
+ * Cross-project isolation (architect review fix C1):
+ *   The events list and the export-creation filter both go through
+ *   `resolveProjectScope`, so a caller can only target their own
+ *   project or one they have a real role assignment on. The previous
+ *   implementation honored any `?projectId=` query and any
+ *   `filters.projectId` body, which leaked audit logs across projects
+ *   to any role with AuditRead / AuditExport.
  *
- * The export endpoint is the compliance-grade "snapshot" the team hands
- * to a regulator or external sponsor. The action requires:
- *   - AuditExport permission (Auditor / SponsorAdmin)
- *   - non-empty reason (CRITICAL_AUDIT_PAIRS marks AuditExport.Export as
- *     requiresReason: true; audit() enforces it)
- *   - filters that describe which events to include
- * The endpoint creates:
- *   - ExportRecord row (objectType=AuditExport, objectIds=[]) so the
- *     export itself becomes an auditable artifact
- *   - AuditEvent row (action=export, objectType=AuditExport) tying the
- *     export to its reason and filters
+ * Compliance snapshot (architect review fix M2):
+ *   The export endpoint resolves the actual set of audit event ids
+ *   the export covers, persists that list to `objectIds` (capped at
+ *   200 ids; a SHA-256 over the full id set is stored in
+ *   `afterValue.contentHash`), and writes the same ids to the
+ *   critical AuditEvent. The `ExportRecord.projectId` and the
+ *   `AuditEvent.projectId` are guaranteed to match because both go
+ *   through the same `resolvedProjectId` (architect review fix M5).
  *
- * 21 CFR Part 11: the chain (audit events → filter snapshot → export
- * reason → ExportRecord) is reconstructible from the API alone.
+ *   21 CFR Part 11: from the API alone an inspector can re-derive
+ *   the exact set of events the export covered (id list) AND prove
+ *   the export is unchanged (contentHash over the id list).
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -35,9 +36,10 @@ import {
   Permission,
   authorize,
 } from "@aic-dct/domain";
-import type { AuditEvent, ExportRecord } from "@prisma/client";
+import type { AuditEvent, ExportRecord, Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { prisma } from "../db.js";
-import { audit, requireUser } from "../lib/auth.js";
+import { audit, requireUser, resolveProjectScope } from "../lib/auth.js";
 
 const listQuerySchema = z.object({
   projectId: z.string().optional(),
@@ -65,6 +67,46 @@ const exportSchema = z.object({
     .default({}),
 });
 
+/** Cap the persisted id list. Real exports would be streamed or written
+ *  to object storage; this cap keeps the on-DB payload bounded. */
+const MAX_EVENT_IDS_IN_EXPORT = 200;
+
+interface ResolvedFilters {
+  projectId: string;
+  objectType?: AuditObjectType;
+  action?: string;
+  actorUserId?: string;
+  from?: Date;
+  to?: Date;
+}
+
+function buildEventWhere(
+  f: ResolvedFilters,
+): Prisma.AuditEventWhereInput {
+  return {
+    projectId: f.projectId,
+    ...(f.objectType ? { objectType: f.objectType } : {}),
+    ...(f.action ? { action: f.action } : {}),
+    ...(f.actorUserId ? { actorUserId: f.actorUserId } : {}),
+    ...(f.from || f.to
+      ? {
+          timestamp: {
+            ...(f.from ? { gte: f.from } : {}),
+            ...(f.to ? { lte: f.to } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+function hashEventIds(ids: ReadonlyArray<string>): string {
+  // Stable, deterministic hash of the (sorted) id set. Lets an
+  // inspector detect tampering on the persisted objectIds list.
+  const sorted = [...ids].sort();
+  const digest = createHash("sha256").update(sorted.join("|")).digest("hex");
+  return `sha256:${digest}`;
+}
+
 export function registerAuditRoutes(app: FastifyInstance): void {
   /* ─── List events ─────────────────────────────────────── */
   app.get<{ Querystring: z.infer<typeof listQuerySchema> }>(
@@ -80,22 +122,19 @@ export function registerAuditRoutes(app: FastifyInstance): void {
           { requestId: req.id, details: { issues: parsed.error.issues } },
         );
       }
-      const { projectId, objectType, action, actorUserId, from, to, page, pageSize } =
+      const { projectId: queryProjectId, objectType, action, actorUserId, from, to, page, pageSize } =
         parsed.data;
-      const where = {
-        projectId: projectId ?? user.projectId,
+      // C1: scope to the caller's project unless they have a real
+      // assignment on a different one.
+      const projectId = resolveProjectScope(user, queryProjectId, req.id);
+      const where = buildEventWhere({
+        projectId,
         ...(objectType ? { objectType } : {}),
         ...(action ? { action } : {}),
         ...(actorUserId ? { actorUserId } : {}),
-        ...(from || to
-          ? {
-              timestamp: {
-                ...(from ? { gte: from } : {}),
-                ...(to ? { lte: to } : {}),
-              },
-            }
-          : {}),
-      };
+        ...(from ? { from } : {}),
+        ...(to ? { to } : {}),
+      });
       const [rows, total] = await Promise.all([
         prisma().auditEvent.findMany({
           where,
@@ -131,6 +170,10 @@ export function registerAuditRoutes(app: FastifyInstance): void {
   app.get("/api/audit/exports", async (req) => {
     const user = await requireUser(req);
     authorize(user, Permission.AuditRead, { requestId: req.id });
+    // The list view is hard-scoped to user.projectId; the cross-project
+    // query is only honored for callers with a real assignment on the
+    // other project. We do not pass a query projectId here — the list
+    // view is project-scoped by design.
     const rows = await prisma().exportRecord.findMany({
       where: { projectId: user.projectId, objectType: "AuditExport" },
       orderBy: { exportedAt: "desc" },
@@ -163,19 +206,45 @@ export function registerAuditRoutes(app: FastifyInstance): void {
         );
       }
       const { reason, format, filters } = parsed.data;
-      // Pin the export to the user's project unless the filter specifies
-      // another one (in which case we still trust the user.projectId for
-      // the ExportRecord itself — the filter scope is what gets audited).
-      const projectId = filters.projectId ?? user.projectId;
-      // audit-before-mutate: create the ExportRecord first, then write
-      // the critical AuditEvent. The reason is required by
-      // CRITICAL_AUDIT_PAIRS (AuditExport.Export, requiresReason: true);
-      // audit() will throw REASON_REQUIRED on empty input.
+      // C1/M5: resolve the target projectId through the same isolation
+      // gate as the list endpoint. The ExportRecord and the critical
+      // AuditEvent both use this resolved id, so the compliance chain
+      // stays coherent.
+      const resolvedProjectId = resolveProjectScope(
+        user,
+        filters.projectId,
+        req.id,
+      );
+      // M2: snapshot the event ids the export covers BEFORE writing the
+      // export record. The id list goes into ExportRecord.objectIds
+      // (capped) and a SHA-256 over the full id set goes into
+      // afterValue.contentHash. This is the 21 CFR Part 11
+      // reconstructible contract.
+      const where = buildEventWhere({
+        projectId: resolvedProjectId,
+        ...(filters.objectType ? { objectType: filters.objectType } : {}),
+        ...(filters.action ? { action: filters.action } : {}),
+        ...(filters.actorUserId ? { actorUserId: filters.actorUserId } : {}),
+        ...(filters.from ? { from: filters.from } : {}),
+        ...(filters.to ? { to: filters.to } : {}),
+      });
+      const allMatching = await prisma().auditEvent.findMany({
+        where,
+        select: { id: true },
+        orderBy: { timestamp: "asc" },
+      });
+      const allIds = allMatching.map((e) => e.id);
+      const persistedIds = allIds.slice(0, MAX_EVENT_IDS_IN_EXPORT);
+      const truncated = allIds.length > persistedIds.length;
+      const contentHash = hashEventIds(allIds);
+      // audit-before-mutate: write the ExportRecord first, then the
+      // critical AuditEvent. reason is enforced by audit()'s
+      // CRITICAL_AUDIT_PAIRS check for AuditExport.Export.
       const exportRecord = await prisma().exportRecord.create({
         data: {
-          projectId,
+          projectId: resolvedProjectId,
           objectType: "AuditExport",
-          objectIds: [],
+          objectIds: persistedIds,
           format,
           reason,
           exportedByUserId: user.userId,
@@ -191,8 +260,12 @@ export function registerAuditRoutes(app: FastifyInstance): void {
           exportRecordId: exportRecord.id,
           filters,
           format,
+          eventCount: allIds.length,
+          eventIdsPersisted: persistedIds.length,
+          eventIdsTruncated: truncated,
+          contentHash,
         },
-        { reason },
+        { reason, projectId: resolvedProjectId },
       );
       return {
         id: exportRecord.id,
@@ -202,6 +275,9 @@ export function registerAuditRoutes(app: FastifyInstance): void {
         reason: exportRecord.reason,
         exportedByUserId: exportRecord.exportedByUserId,
         exportedAt: exportRecord.exportedAt.toISOString(),
+        eventCount: allIds.length,
+        eventIdsTruncated: truncated,
+        contentHash,
       };
     },
   );

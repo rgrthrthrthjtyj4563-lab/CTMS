@@ -66,6 +66,32 @@ describe("RBAC role permissions", () => {
     expect(roleHasPermission(Role.CROPM, Permission.ProtocolParse)).toBe(true);
     expect(roleHasPermission(Role.SitePI, Permission.ProtocolParse)).toBe(false);
   });
+
+  // C3 (architect review): assert the Phase 3.5 DocumentUpload /
+  // DocumentVersion matrix matches docs/domain/rbac-matrix.md.
+  it("DocumentUpload is granted to Sponsor/CROPM/SitePI only", () => {
+    expect(roleHasPermission(Role.SponsorAdmin, Permission.DocumentUpload)).toBe(true);
+    expect(roleHasPermission(Role.CROPM, Permission.DocumentUpload)).toBe(true);
+    expect(roleHasPermission(Role.SitePI, Permission.DocumentUpload)).toBe(true);
+    expect(roleHasPermission(Role.SiteCRC, Permission.DocumentUpload)).toBe(false);
+    expect(roleHasPermission(Role.CRA, Permission.DocumentUpload)).toBe(false);
+    expect(roleHasPermission(Role.Auditor, Permission.DocumentUpload)).toBe(false);
+    expect(roleHasPermission(Role.RegulatorReadOnly, Permission.DocumentUpload)).toBe(false);
+  });
+
+  it("DocumentVersion is granted to Sponsor/CROPM/SitePI only", () => {
+    expect(roleHasPermission(Role.SponsorAdmin, Permission.DocumentVersion)).toBe(true);
+    expect(roleHasPermission(Role.CROPM, Permission.DocumentVersion)).toBe(true);
+    expect(roleHasPermission(Role.SitePI, Permission.DocumentVersion)).toBe(true);
+    expect(roleHasPermission(Role.SiteCRC, Permission.DocumentVersion)).toBe(false);
+    expect(roleHasPermission(Role.CRA, Permission.DocumentVersion)).toBe(false);
+    expect(roleHasPermission(Role.Auditor, Permission.DocumentVersion)).toBe(false);
+  });
+
+  it("DocumentRead remains granted to read-only roles (Auditor/Regulator)", () => {
+    expect(roleHasPermission(Role.Auditor, Permission.DocumentRead)).toBe(true);
+    expect(roleHasPermission(Role.RegulatorReadOnly, Permission.DocumentRead)).toBe(true);
+  });
 });
 
 describe("authorize", () => {
