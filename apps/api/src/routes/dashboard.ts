@@ -1,8 +1,9 @@
 /**
- * Real dashboard endpoints. Phase 1 reads from the Prisma seed; the
- * shapes mirror the Web DashboardPage so the prototype's mock arrays
- * (SUBJECTS / RISK_ITEMS / ENROLLMENT_DATA / RISK_TREND / CENTER_RISK
- * / AUDIT_LOGS) are entirely replaced by API responses.
+ * Phase 3 dashboard endpoints. Reads live Prisma counts and recent
+ * audit / risk / safety rows scoped to the caller's project. Phase 1
+ * shipped mock arrays (SUBJECTS / RISK_ITEMS / ENROLLMENT_DATA / ...) in
+ * the Web client; this module replaces those with real aggregates that
+ * flow into RiskMonitorPage and DashboardPage.
  *
  * All responses are scoped to a projectId passed via ?projectId=...
  * The Web app reads the current projectId from the saved session.

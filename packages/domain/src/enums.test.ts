@@ -28,6 +28,7 @@ import {
   SAFETY_EVENT_TRANSITIONS,
   RISK_STATUS_TRANSITIONS,
   REPORT_STATUS_TRANSITIONS,
+  PROTOCOL_PARSE_TRANSITIONS,
 } from "./enums.js";
 
 describe("ProtocolParseStatus", () => {
@@ -39,6 +40,27 @@ describe("ProtocolParseStatus", () => {
   it("rejects unknown values", () => {
     expect(() => ProtocolParseStatusSchema.parse("queued")).toThrow();
     expect(() => ProtocolParseStatusSchema.parse("")).toThrow();
+  });
+
+  it("Uploaded → Parsing → Parsed → UnderReview → Effective → Superseded", () => {
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.Uploaded, ProtocolParseStatus.Parsing)).toBe(true);
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.Parsing, ProtocolParseStatus.Parsed)).toBe(true);
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.Parsed, ProtocolParseStatus.UnderReview)).toBe(true);
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.UnderReview, ProtocolParseStatus.Effective)).toBe(true);
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.Effective, ProtocolParseStatus.Superseded)).toBe(true);
+  });
+
+  it("Parsed cannot skip UnderReview to Effective", () => {
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.Parsed, ProtocolParseStatus.Effective)).toBe(false);
+  });
+
+  it("ParseFailed can retry to Parsing", () => {
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.ParseFailed, ProtocolParseStatus.Parsing)).toBe(true);
+    expect(canTransition(PROTOCOL_PARSE_TRANSITIONS, ProtocolParseStatus.ParseFailed, ProtocolParseStatus.Effective)).toBe(false);
+  });
+
+  it("Superseded is terminal", () => {
+    expect(PROTOCOL_PARSE_TRANSITIONS.Superseded).toEqual([]);
   });
 });
 

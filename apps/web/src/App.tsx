@@ -11,6 +11,8 @@ import { RemoteVisitPage } from "./routes/RemoteVisitPage.js";
 import { EproPage } from "./routes/EproPage.js";
 import { SafetyEventsPage } from "./routes/SafetyEventsPage.js";
 import { SafetyEventDetailPage } from "./routes/SafetyEventDetailPage.js";
+import { RiskMonitorPage } from "./routes/RiskMonitorPage.js";
+import { ProtocolPage } from "./routes/ProtocolPage.js";
 import { AppShell } from "./components/app/AppShell.js";
 import { Toaster } from "./components/ui/Toast.js";
 import { loadSession, type Session } from "./lib/session.js";
@@ -160,6 +162,22 @@ function SafetyEventDetailRoute() {
   );
 }
 
+function RiskMonitorRoute() {
+  return (
+    <RequireAuth>
+      <RiskMonitorPage />
+    </RequireAuth>
+  );
+}
+
+function ProtocolRoute() {
+  return (
+    <RequireAuth>
+      <ProtocolPage />
+    </RequireAuth>
+  );
+}
+
 function PlaceholderRoute() {
   const location = useLocation();
   const cfg = ROUTE_PHASE[location.pathname];
@@ -185,13 +203,16 @@ export function App() {
         <Route path="/app/epro" element={<EproRoute />} />
         <Route path="/app/ae-sae" element={<SafetyEventsRoute />} />
         <Route path="/app/ae-sae/:eventId" element={<SafetyEventDetailRoute />} />
+        <Route path="/app/risk-monitor" element={<RiskMonitorRoute />} />
+        <Route path="/app/protocol" element={<ProtocolRoute />} />
         {Object.keys(ROUTE_PHASE)
           .filter(
             (p) =>
               p !== "/app/subjects" &&
               p !== "/app/econsent" &&
               p !== "/app/remote-visit" &&
-              p !== "/app/epro",
+              p !== "/app/epro" &&
+              p !== "/app/protocol"
           )
           .map((path) => (
             <Route key={path} path={path} element={<PlaceholderRoute />} />

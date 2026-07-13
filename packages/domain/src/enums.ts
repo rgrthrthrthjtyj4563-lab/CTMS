@@ -39,6 +39,30 @@ export type ProtocolParseStatus =
   (typeof ProtocolParseStatus)[keyof typeof ProtocolParseStatus];
 export const ProtocolParseStatusSchema = z.nativeEnum(ProtocolParseStatus);
 
+/** Allowed transitions for ProtocolParseStatus. Centralized so backend services,
+ * API routes, the worker, and tests all reference the same rules.
+ *
+ * Lifecycle:
+ *   Uploaded → Parsing (worker scan)
+ *   Parsing → Parsed | ParseFailed
+ *   Parsed → UnderReview (human review begins)
+ *   ParseFailed → Parsing (retry)
+ *   UnderReview → Effective (PI/Sponsor activates)
+ *   Effective → Superseded (a newer version activated)
+ *   Superseded is terminal. */
+export const PROTOCOL_PARSE_TRANSITIONS: Record<
+  ProtocolParseStatus,
+  ProtocolParseStatus[]
+> = {
+  Uploaded: ["Parsing"],
+  Parsing: ["Parsed", "ParseFailed"],
+  Parsed: ["UnderReview"],
+  ParseFailed: ["Parsing"],
+  UnderReview: ["Effective"],
+  Effective: ["Superseded"],
+  Superseded: [],
+};
+
 // ─── Human Confirmation Status ───────────────────────────────
 export const HumanConfirmationStatus = {
   Pending: "Pending",

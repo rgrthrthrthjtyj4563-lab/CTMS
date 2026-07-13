@@ -15,6 +15,7 @@
   "dependencies": {
     "@aic-dct/config": "*",
     "@aic-dct/domain": "*",
+    "@prisma/client": "5.22.0",
     "zod": "3.23.8"
   },
   "devDependencies": {
