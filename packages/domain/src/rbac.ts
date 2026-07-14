@@ -51,6 +51,7 @@ export const Permission = {
   // Questionnaire (ePRO/eCOA)
   QuestionnaireRead: "questionnaire:read",
   QuestionnaireSubmit: "questionnaire:submit",
+  QuestionnaireAssistedEntry: "questionnaire:assisted-entry",
   QuestionnaireReview: "questionnaire:review",
 
   // Safety
@@ -236,7 +237,7 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlyArray<Permission>> = {
     Permission.VisitUpdate,
     Permission.VisitSubmit,
     Permission.QuestionnaireRead,
-    Permission.QuestionnaireSubmit,
+    Permission.QuestionnaireAssistedEntry,
     Permission.SafetyRead,
     Permission.SafetyDraft,
     Permission.RiskRead,

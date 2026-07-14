@@ -25,7 +25,7 @@ Baseline commit: `b8777b1` (+ hardening follow-up)
 ## Known limits (explicit non-goals for M4A)
 
 - **No Expo / native App UI** — only API + CLI smoke; full mobile UX is M4B
-- **No Assisted Entry** — CRC cannot legitimately record on behalf of Subject yet; staff `StaffEntry` remains separate from App origin
+- **Assisted Entry** — delivered in follow-up commit `assisted-entry` slice; see `phase-4-assisted-entry-done.md`
 - **Historical seed ePRO rows are `StaffEntry`** — not App source data; only rows created via Subject portal or the seeded Scheduled Subject task count as App channel
 - **Dev auth only** (`X-Actor-Id` / mock login); no production OIDC
 - **Phase 3 debt untouched**: partial R1 on documents/subjects writes, PII matrix drift, weak phase-3 closure assertions

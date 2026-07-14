@@ -36,6 +36,7 @@ import { registerAuditRoutes } from "./routes/audit.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerProtocolRoutes } from "./routes/protocol.js";
 import { registerSubjectPortalRoutes } from "./routes/subject-portal.js";
+import { registerAssistedEntryRoutes } from "./routes/assisted-entry.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -110,6 +111,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerDashboardRoutes(app);
   registerProtocolRoutes(app);
   registerSubjectPortalRoutes(app);
+  registerAssistedEntryRoutes(app);
 
   return app;
 }

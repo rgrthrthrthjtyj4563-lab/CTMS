@@ -189,6 +189,18 @@ export type DataEntryChannel =
   (typeof DataEntryChannel)[keyof typeof DataEntryChannel];
 export const DataEntryChannelSchema = z.nativeEnum(DataEntryChannel);
 
+// ─── Assisted Collection Channel ─────────────────────────────
+export const AssistedCollectionChannel = {
+  Phone: "Phone",
+  InPerson: "InPerson",
+  Video: "Video",
+  HomeVisit: "HomeVisit",
+  Other: "Other",
+} as const;
+export type AssistedCollectionChannel =
+  (typeof AssistedCollectionChannel)[keyof typeof AssistedCollectionChannel];
+export const AssistedCollectionChannelSchema = z.nativeEnum(AssistedCollectionChannel);
+
 // ─── Symptom Report Status ───────────────────────────────────
 export const SymptomReportStatus = {
   Draft: "Draft",

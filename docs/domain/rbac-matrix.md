@@ -34,7 +34,8 @@ Legend:
 | visit:submit |  |  | ✅ | ✅ |  |  |  |  |  |  | ✅ |
 | visit:close |  |  | ✅ |  |  |  |  |  |  |  | ✅ |
 | questionnaire:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  | ✅ |
-| questionnaire:submit |  |  |  | ✅ |  |  |  | ✅ |  |  | ✅ |
+| questionnaire:submit |  |  |  |  |  |  |  | ✅ |  |  | ✅ |
+| questionnaire:assisted-entry |  |  |  | ✅ |  |  |  |  |  |  | ✅ |
 | symptom:report |  |  |  |  |  |  |  | ✅ |  |  | ✅ |
 | questionnaire:review |  |  | ✅ |  |  |  |  |  |  |  | ✅ |
 | safety:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  | ✅ |

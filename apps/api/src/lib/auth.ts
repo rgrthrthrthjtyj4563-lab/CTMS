@@ -209,6 +209,20 @@ export async function assertSubjectSelfScope(
  * Require a Subject-role caller with a bound subject record and verify the
  * requested permission against the Subject role on the bound project.
  */
+/**
+ * Site CRC must not use staff ePRO write paths for on-behalf-of-subject
+ * data — those require the Assisted Entry workflow.
+ */
+export function assertCrcUsesAssistedEntry(role: Role, requestId: string): void {
+  if (role === Role.SiteCRC) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "Site CRC must use /api/epro/assisted-entries for on-behalf-of-subject ePRO",
+      { requestId, details: { role } },
+    );
+  }
+}
+
 export async function requireSubjectActor(
   req: FastifyRequest,
   permission: Permission,

@@ -61,6 +61,8 @@ model User {
   documentVersions         DocumentVersion[]
   aiOutputs                AIOutput[]
   aiCallLogs               AICallLog[]
+  assistedEntriesRecorded  AssistedEntry[]         @relation("AssistedEntryRecorder")
+  assistedEntryCorrections AssistedEntryCorrection[]
 }
 
 model RoleAssignment {
@@ -113,6 +115,7 @@ model Project {
   aiOutputs              AIOutput[]
   auditEvents            AuditEvent[]
   symptomReports         SymptomReport[]
+  assistedEntries        AssistedEntry[]
 }
 
 model Site {
@@ -179,6 +182,7 @@ model Subject {
   drugShipments          DrugShipment[]
   sampleTransfers        SampleTransfer[]
   symptomReports         SymptomReport[]
+  assistedEntries        AssistedEntry[]
   subjectUser            User?             @relation("SubjectAccount", fields: [subjectUserId], references: [id])
   subjectUserId          String?           @unique
 
@@ -398,6 +402,14 @@ enum SymptomReportStatus {
   Submitted
 }
 
+enum AssistedCollectionChannel {
+  Phone
+  InPerson
+  Video
+  HomeVisit
+  Other
+}
+
 model QuestionnaireTemplate {
   id        String   @id @default(cuid())
   projectId String
@@ -431,7 +443,47 @@ model QuestionnaireResponse {
   template    QuestionnaireTemplate @relation(fields: [questionnaireTemplateId], references: [id])
   subject     Subject               @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   visit       Visit?                @relation(fields: [visitId], references: [id])
-  submittedBy User?                 @relation("QuestionnaireSubmittedBy", fields: [submittedByUserId], references: [id])
+  submittedBy   User?          @relation("QuestionnaireSubmittedBy", fields: [submittedByUserId], references: [id])
+  assistedEntry AssistedEntry?
+}
+
+model AssistedEntry {
+  id                      String                    @id @default(cuid())
+  projectId               String
+  subjectId               String
+  recorderUserId          String
+  reason                  String
+  collectionChannel       AssistedCollectionChannel
+  instrumentType          String
+  questionnaireResponseId String                    @unique
+  templateId              String
+  templateCode            String
+  templateVersion         String
+  recordedAt              DateTime                  @default(now())
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+
+  project               Project                   @relation(fields: [projectId], references: [id])
+  subject                 Subject                   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  recorder                User                      @relation("AssistedEntryRecorder", fields: [recorderUserId], references: [id])
+  questionnaireResponse   QuestionnaireResponse     @relation(fields: [questionnaireResponseId], references: [id], onDelete: Cascade)
+  corrections             AssistedEntryCorrection[]
+
+  @@index([projectId, recordedAt])
+  @@index([subjectId])
+}
+
+model AssistedEntryCorrection {
+  id              String   @id @default(cuid())
+  assistedEntryId String
+  actorUserId     String
+  reason          String
+  beforeValue     Json
+  afterValue      Json
+  correctedAt     DateTime @default(now())
+
+  assistedEntry AssistedEntry @relation(fields: [assistedEntryId], references: [id], onDelete: Cascade)
+  actor         User          @relation(fields: [actorUserId], references: [id])
 }
 
 model SymptomReport {

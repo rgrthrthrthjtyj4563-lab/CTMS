@@ -1031,6 +1031,22 @@ paths:
       responses:
         '200': { description: Submitted }
 
+  /api/epro/assisted-entries/start:
+    post:
+      summary: Start CRC assisted ePRO entry (AssistedEntry channel; reason required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Assisted entry + response created }
+
+  /api/epro/assisted-entries/{assistedEntryId}/submit:
+    parameters:
+      - { name: assistedEntryId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Submit assisted ePRO entry (distinct from SubjectSelfReport)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Submitted with audit }
+
   /api/subject/symptom-reports:
     post:
       summary: Submit symptom report; severe flags create risk + safety draft

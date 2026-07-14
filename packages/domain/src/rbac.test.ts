@@ -61,6 +61,11 @@ describe("RBAC role permissions", () => {
     expect(perms).not.toContain(Permission.SafetyConfirm);
   });
 
+  it("SiteCRC uses assisted-entry instead of staff questionnaire submit", () => {
+    expect(roleHasPermission(Role.SiteCRC, Permission.QuestionnaireAssistedEntry)).toBe(true);
+    expect(roleHasPermission(Role.SiteCRC, Permission.QuestionnaireSubmit)).toBe(false);
+  });
+
   it("ProviderNurse cannot dispatch drugs", () => {
     expect(roleHasPermission(Role.ProviderNurse, Permission.DrugDispatch)).toBe(false);
     expect(roleHasPermission(Role.ProviderNurse, Permission.SampleCollect)).toBe(true);

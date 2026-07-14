@@ -17,6 +17,7 @@ export const AuditObjectType = {
   Consent: "Consent",
   Visit: "Visit",
   QuestionnaireResponse: "QuestionnaireResponse",
+  AssistedEntry: "AssistedEntry",
   SymptomReport: "SymptomReport",
   SafetyEvent: "SafetyEvent",
   RiskSignal: "RiskSignal",
@@ -98,6 +99,11 @@ export const CRITICAL_AUDIT_PAIRS: ReadonlyArray<{
   requiresReason?: boolean;
   requiresConfirmation?: boolean;
 }> = [
+  // Assisted entry (CRC on-behalf-of-subject; never SubjectSelfReport)
+  { objectType: AuditObjectType.AssistedEntry, action: AuditAction.Create, requiresReason: true },
+  { objectType: AuditObjectType.AssistedEntry, action: AuditAction.Submit, requiresReason: true },
+  { objectType: AuditObjectType.AssistedEntry, action: AuditAction.Update, requiresReason: true },
+
   // Consent
   { objectType: AuditObjectType.Consent, action: AuditAction.Sign, requiresConfirmation: true, requiresReason: false },
   { objectType: AuditObjectType.Consent, action: AuditAction.Reopen, requiresConfirmation: true, requiresReason: true },

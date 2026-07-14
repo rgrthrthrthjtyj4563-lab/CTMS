@@ -30,6 +30,7 @@ import { prisma } from "../db.js";
 import {
   assertProjectAccess,
   assertQuestionnaireTransition,
+  assertCrcUsesAssistedEntry,
   assertSubjectSelfScope,
   audit,
   requireUser,
@@ -261,7 +262,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
       const user = await requireUser(req);
       const resp = await loadResponseScoped(user, req.params.responseId, req.id);
       await assertSubjectSelfScope(user, resp.subjectId, req.id);
-      const [subject, template, submitter, reviewer] = await Promise.all([
+      const [subject, template, submitter, reviewer, assistedEntry] = await Promise.all([
         prisma().subject.findUnique({
           where: { id: resp.subjectId },
           select: { id: true, subjectCode: true },
@@ -279,6 +280,18 @@ export function registerEproRoutes(app: FastifyInstance): void {
           ? prisma().user.findUnique({
               where: { id: resp.reviewedByUserId },
               select: { displayName: true },
+            })
+          : null,
+        resp.entryChannel === DataEntryChannel.AssistedEntry
+          ? prisma().assistedEntry.findUnique({
+              where: { questionnaireResponseId: resp.id },
+              include: {
+                recorder: { select: { id: true, displayName: true } },
+                corrections: {
+                  orderBy: { correctedAt: "asc" },
+                  include: { actor: { select: { displayName: true } } },
+                },
+              },
             })
           : null,
       ]);
@@ -307,6 +320,22 @@ export function registerEproRoutes(app: FastifyInstance): void {
         subject: subject
           ? { id: subject.id, subjectCode: subject.subjectCode }
           : { id: resp.subjectId, subjectCode: "—" },
+        assistedEntry: assistedEntry
+          ? {
+              id: assistedEntry.id,
+              reason: assistedEntry.reason,
+              collectionChannel: assistedEntry.collectionChannel,
+              recordedAt: assistedEntry.recordedAt.toISOString(),
+              recorder: assistedEntry.recorder,
+              dataOrigin: "AssistedEntry",
+              corrections: assistedEntry.corrections.map((c) => ({
+                id: c.id,
+                reason: c.reason,
+                actorName: c.actor.displayName,
+                correctedAt: c.correctedAt.toISOString(),
+              })),
+            }
+          : null,
       };
     },
   );
@@ -315,6 +344,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
     "/api/epro/responses",
     async (req) => {
       const user = await requireUser(req);
+      assertCrcUsesAssistedEntry(user.role, req.id);
       const parsed = startResponseSchema.safeParse(req.body);
       if (!parsed.success) {
         throw new ApiErrorException(
@@ -391,6 +421,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof saveResponseSchema>;
   }>("/api/epro/responses/:responseId", async (req) => {
     const user = await requireUser(req);
+    assertCrcUsesAssistedEntry(user.role, req.id);
     const parsed = saveResponseSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -450,6 +481,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof submitResponseSchema>;
   }>("/api/epro/responses/:responseId/submit", async (req) => {
     const user = await requireUser(req);
+    assertCrcUsesAssistedEntry(user.role, req.id);
     const parsed = submitResponseSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(

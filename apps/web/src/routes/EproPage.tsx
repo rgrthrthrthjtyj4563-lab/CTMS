@@ -10,6 +10,7 @@
  * remains demoable even with an empty seed (the seed only seeds
  * AIOutput / AuditEvent; questionnaire templates are project-provided).
  */
+import { Role } from "@aic-dct/domain";
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../components/ui/Card.js";
 import { Button } from "../components/ui/Button.js";
@@ -27,14 +28,27 @@ import {
   listEproTemplates,
   reviewEproResponse,
   saveEproResponse,
+  startAssistedEproEntry,
   startEproResponse,
+  saveAssistedEproEntry,
+  submitAssistedEproEntry,
   submitEproResponse,
+  type AssistedEntryMeta,
   type EproResponseRow,
   type EproTemplate,
   type QuestionnaireItem,
   type QuestionnaireSection,
 } from "../lib/api/epro.js";
 import { listSubjects } from "../lib/api/subjects.js";
+import { loadSession } from "../lib/session.js";
+
+const COLLECTION_CHANNELS = [
+  { value: "Phone", label: "电话" },
+  { value: "InPerson", label: "现场" },
+  { value: "Video", label: "视频" },
+  { value: "HomeVisit", label: "上门" },
+  { value: "Other", label: "其他" },
+] as const;
 
 const QSTATUS_LABEL: Record<string, string> = {
   Scheduled: "待开始",
@@ -62,6 +76,8 @@ function formatTime(s: string | null): string {
 }
 
 export function EproPage() {
+  const session = useMemo(() => loadSession(), []);
+  const isCrc = session?.role === Role.SiteCRC;
   const [tab, setTab] = useState<"responses" | "templates">("responses");
   const [templates, setTemplates] = useState<EproTemplate[] | null>(null);
   const [responses, setResponses] = useState<EproResponseRow[] | null>(null);
@@ -77,12 +93,16 @@ export function EproPage() {
     submittedAt: string | null;
     reviewedAt: string | null;
     entryChannel: string | null;
+    assistedEntry: AssistedEntryMeta | null;
   } | null>(null);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
+  const [assistedEntryId, setAssistedEntryId] = useState<string | null>(null);
+  const [assistedStartReason, setAssistedStartReason] = useState("");
   const [startOpen, setStartOpen] = useState(false);
   const [startSubjectId, setStartSubjectId] = useState("");
   const [startTemplateId, setStartTemplateId] = useState("");
+  const [startCollectionChannel, setStartCollectionChannel] = useState("Phone");
   const [startSubjectOptions, setStartSubjectOptions] = useState<
     { id: string; subjectCode: string }[]
   >([]);
@@ -121,8 +141,10 @@ export function EproPage() {
         subjectCode: d.subject.subjectCode,
         submittedAt: d.response.submittedAt,
         reviewedAt: d.response.reviewedAt,
-        entryChannel: (d.response as { entryChannel?: string }).entryChannel ?? null,
+        entryChannel: d.response.entryChannel ?? null,
+        assistedEntry: d.assistedEntry ?? null,
       });
+      setAssistedEntryId(d.assistedEntry?.id ?? null);
       setAnswers(d.response.responses);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "加载详情失败");
@@ -142,7 +164,11 @@ export function EproPage() {
     if (!selectedId) return;
     setBusy(true);
     try {
-      await saveEproResponse(selectedId, answers);
+      if (assistedEntryId) {
+        await saveAssistedEproEntry(assistedEntryId, answers);
+      } else {
+        await saveEproResponse(selectedId, answers);
+      }
       pushToast({ tone: "success", title: "已保存" });
       await Promise.all([reloadDetail(selectedId), reloadResponses()]);
     } catch (e) {
@@ -160,7 +186,16 @@ export function EproPage() {
     if (!selectedId) return;
     setBusy(true);
     try {
-      await submitEproResponse(selectedId, answers);
+      if (assistedEntryId) {
+        const reason = assistedStartReason || detail?.assistedEntry?.reason;
+        if (!reason) {
+          pushToast({ tone: "error", title: "CRC 代录提交需要代录原因" });
+          return;
+        }
+        await submitAssistedEproEntry(assistedEntryId, answers, reason);
+      } else {
+        await submitEproResponse(selectedId, answers);
+      }
       pushToast({ tone: "success", title: "已提交问卷" });
       await Promise.all([reloadDetail(selectedId), reloadResponses()]);
     } catch (e) {
@@ -208,15 +243,32 @@ export function EproPage() {
 
   const handleStart = async () => {
     if (!startSubjectId || !startTemplateId) return;
+    if (isCrc && !assistedStartReason.trim()) {
+      pushToast({ tone: "error", title: "请填写 CRC 代录原因" });
+      return;
+    }
     setBusy(true);
     try {
-      const r = await startEproResponse(startSubjectId, startTemplateId);
-      pushToast({ tone: "success", title: "问卷任务已创建" });
+      const r = isCrc
+        ? await startAssistedEproEntry({
+            subjectId: startSubjectId,
+            questionnaireTemplateId: startTemplateId,
+            reason: assistedStartReason.trim(),
+            collectionChannel: startCollectionChannel,
+          })
+        : await startEproResponse(startSubjectId, startTemplateId);
+      pushToast({
+        tone: "success",
+        title: isCrc ? "CRC 代录任务已创建" : "问卷任务已创建",
+      });
       setStartOpen(false);
       setStartSubjectId("");
       setStartTemplateId("");
+      if (isCrc && "assistedEntryId" in r) {
+        setAssistedEntryId(r.assistedEntryId);
+      }
       await reloadResponses();
-      setSelectedId(r.id);
+      setSelectedId("responseId" in r ? r.responseId : r.id);
     } catch (e) {
       pushToast({
         tone: "error",
@@ -261,7 +313,7 @@ export function EproPage() {
         </div>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={openStartDialog}>
-            新建问卷任务
+            {isCrc ? "CRC 代录" : "新建问卷任务"}
           </Button>
         </div>
       </header>
@@ -351,6 +403,8 @@ export function EproPage() {
                         {r.templateName} v{r.templateVersion}
                         {r.entryChannel === "SubjectSelfReport" ? (
                           <span className="ml-1 text-emerald-700">· 受试者源数据</span>
+                        ) : r.entryChannel === "AssistedEntry" ? (
+                          <span className="ml-1 text-amber-700">· CRC 代录</span>
                         ) : null}
                       </div>
                     </button>
@@ -394,6 +448,19 @@ export function EproPage() {
                   <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-100 rounded px-2 py-1.5">
                     本条为受试者 App 源数据，后台仅可监查与审核，不能修改或代提交原始作答。
                   </p>
+                ) : null}
+                {detail.assistedEntry ? (
+                  <div className="text-xs text-amber-900 bg-amber-50 border border-amber-100 rounded px-2 py-1.5 space-y-1">
+                    <p>
+                      <strong>CRC 代录</strong>（非受试者 App 自填）· 采集渠道：
+                      {detail.assistedEntry.collectionChannel} · 记录人：
+                      {detail.assistedEntry.recorder?.displayName ?? "—"}
+                    </p>
+                    <p>代录原因：{detail.assistedEntry.reason}</p>
+                    {detail.assistedEntry.corrections.length > 0 ? (
+                      <p>更正记录：{detail.assistedEntry.corrections.length} 条（见审计链）</p>
+                    ) : null}
+                  </div>
                 ) : null}
 
                 <div className="flex flex-wrap gap-2">
@@ -473,9 +540,37 @@ export function EproPage() {
         open={startOpen}
         onClose={() => setStartOpen(false)}
         variant="confirm"
-        title="新建问卷任务"
+        title={isCrc ? "CRC 代录（非受试者 App 自填）" : "新建问卷任务"}
         body={
           <div className="space-y-2">
+            {isCrc ? (
+              <>
+                <label className="block text-xs text-slate-600">
+                  代录原因（必填）
+                  <textarea
+                    rows={2}
+                    value={assistedStartReason}
+                    onChange={(e) => setAssistedStartReason(e.target.value)}
+                    className="mt-1 w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded"
+                    placeholder="例：受试者电话口述，无法自行操作 App"
+                  />
+                </label>
+                <label className="block text-xs text-slate-600">
+                  采集渠道
+                  <select
+                    value={startCollectionChannel}
+                    onChange={(e) => setStartCollectionChannel(e.target.value)}
+                    className="mt-1 w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded"
+                  >
+                    {COLLECTION_CHANNELS.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
             <label className="block text-xs text-slate-600">
               受试者
               <select

@@ -51,11 +51,27 @@ export interface QuestionnaireSection {
   items: QuestionnaireItem[];
 }
 
+export interface AssistedEntryMeta {
+  id: string;
+  reason: string;
+  collectionChannel: string;
+  recordedAt: string;
+  recorder: { id: string; displayName: string } | null;
+  dataOrigin: string;
+  corrections: Array<{
+    id: string;
+    reason: string;
+    actorName: string;
+    correctedAt: string;
+  }>;
+}
+
 export interface EproDetail {
   response: {
     id: string;
     subjectId: string;
     status: string;
+    entryChannel?: string;
     responses: Record<string, unknown>;
     submittedAt: string | null;
     reviewedAt: string | null;
@@ -71,6 +87,42 @@ export interface EproDetail {
     schema: { sections: QuestionnaireSection[] };
   } | null;
   subject: { id: string; subjectCode: string };
+  assistedEntry?: AssistedEntryMeta | null;
+}
+
+export async function startAssistedEproEntry(input: {
+  subjectId: string;
+  questionnaireTemplateId: string;
+  reason: string;
+  collectionChannel: string;
+}) {
+  return apiPost<{
+    assistedEntryId: string;
+    responseId: string;
+    status: string;
+    entryChannel: string;
+  }>("/api/epro/assisted-entries/start", input);
+}
+
+export async function saveAssistedEproEntry(
+  assistedEntryId: string,
+  responses: Record<string, unknown>,
+) {
+  return apiPatch<{ responseId: string; status: string }>(
+    `/api/epro/assisted-entries/${assistedEntryId}/save`,
+    { responses },
+  );
+}
+
+export async function submitAssistedEproEntry(
+  assistedEntryId: string,
+  responses: Record<string, unknown>,
+  reason: string,
+) {
+  return apiPost<{ responseId: string; status: string }>(
+    `/api/epro/assisted-entries/${assistedEntryId}/submit`,
+    { responses, reason },
+  );
 }
 
 export async function listEproTemplates(): Promise<{ items: EproTemplate[] }> {
