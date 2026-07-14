@@ -44,8 +44,13 @@ describe("RBAC role permissions", () => {
   it("Subject has minimal mobile self-service permissions only", () => {
     const perms = rolePermissions(Role.Subject);
     expect(perms).toContain(Permission.SubjectReadMasked);
+    expect(perms).toContain(Permission.SubjectTasksRead);
+    expect(perms).toContain(Permission.QuestionnaireRead);
+    expect(perms).toContain(Permission.QuestionnaireSubmit);
+    expect(perms).toContain(Permission.SymptomReport);
     expect(perms).not.toContain(Permission.SubjectReadFull);
     expect(perms).not.toContain(Permission.SafetyRead);
+    expect(perms).not.toContain(Permission.QuestionnaireReview);
   });
 
   it("ProviderLogistics only sees drug/sample permissions", () => {

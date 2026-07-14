@@ -50,6 +50,8 @@ model User {
   visitSubmissions         Visit[]                 @relation("VisitSubmittedBy")
   visitClosures            Visit[]                 @relation("VisitClosedBy")
   questionnaireSubmissions QuestionnaireResponse[] @relation("QuestionnaireSubmittedBy")
+  boundSubject             Subject?                @relation("SubjectAccount")
+  symptomReports           SymptomReport[]         @relation("SymptomReportSubmittedBy")
   safetyDrafts             SafetyEvent[]
   safetyFollowUps          SafetyFollowUp[]
   riskAssignments          RiskSignal[]            @relation("RiskOwner")
@@ -110,6 +112,7 @@ model Project {
   aiConfigs              AIConfig[]
   aiOutputs              AIOutput[]
   auditEvents            AuditEvent[]
+  symptomReports         SymptomReport[]
 }
 
 model Site {
@@ -175,6 +178,9 @@ model Subject {
   riskSignals            RiskSignal[]
   drugShipments          DrugShipment[]
   sampleTransfers        SampleTransfer[]
+  symptomReports         SymptomReport[]
+  subjectUser            User?             @relation("SubjectAccount", fields: [subjectUserId], references: [id])
+  subjectUserId          String?           @unique
 
   @@unique([projectId, subjectCode])
   @@index([projectId, status])
@@ -381,6 +387,17 @@ enum QuestionnaireStatus {
   Reviewed
 }
 
+enum DataEntryChannel {
+  SubjectSelfReport
+  StaffEntry
+  AssistedEntry
+}
+
+enum SymptomReportStatus {
+  Draft
+  Submitted
+}
+
 model QuestionnaireTemplate {
   id        String   @id @default(cuid())
   projectId String
@@ -402,6 +419,7 @@ model QuestionnaireResponse {
   subjectId               String
   visitId                 String?
   status                  QuestionnaireStatus
+  entryChannel            DataEntryChannel    @default(StaffEntry)
   responses               Json
   submittedByUserId       String?
   submittedAt             DateTime?
@@ -414,6 +432,34 @@ model QuestionnaireResponse {
   subject     Subject               @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   visit       Visit?                @relation(fields: [visitId], references: [id])
   submittedBy User?                 @relation("QuestionnaireSubmittedBy", fields: [submittedByUserId], references: [id])
+}
+
+model SymptomReport {
+  id                String              @id @default(cuid())
+  subjectId         String
+  projectId         String
+  status            SymptomReportStatus
+  entryChannel      DataEntryChannel    @default(SubjectSelfReport)
+  discomfortType    String
+  onsetAt           DateTime
+  severity          RiskLevel
+  soughtMedicalCare Boolean             @default(false)
+  hospitalized      Boolean             @default(false)
+  stoppedMedication Boolean             @default(false)
+  description       String
+  submittedByUserId String?
+  submittedAt       DateTime?
+  riskSignalId      String?
+  safetyEventId     String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  project     Project  @relation(fields: [projectId], references: [id])
+  submittedBy User?    @relation("SymptomReportSubmittedBy", fields: [submittedByUserId], references: [id])
+
+  @@index([projectId, status])
+  @@index([subjectId, status])
 }
 
 // ─── Safety ──────────────────────────────────────────────────

@@ -23,6 +23,7 @@ export interface EproResponseRow {
   submittedAt: string | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
+  entryChannel?: string;
   updatedAt: string;
 }
 

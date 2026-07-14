@@ -5,7 +5,9 @@ import type { FastifyRequest } from "fastify";
 import {
   ApiErrorCode,
   ApiErrorException,
+  Permission,
   Role,
+  authorize,
   type SubjectStatus as SubjectStatusT,
   type ConsentStatus as ConsentStatusT,
   type VisitStatus as VisitStatusT,
@@ -132,6 +134,92 @@ export function assertProjectAccess(
  * Intentionally narrow: this helper does NOT check permissions; the
  * caller always calls `authorize(actor, permission)` after this.
  */
+export interface SubjectIdentity {
+  subjectId: string;
+  projectId: string;
+  siteId: string;
+  subjectCode: string;
+  status: SubjectStatusT;
+}
+
+/**
+ * Resolve the Subject record bound to an authenticated Subject-role user.
+ * M4A contract: exactly one subject per Subject identity; routes MUST NOT
+ * trust client-supplied subjectId / projectId to widen scope.
+ */
+export async function resolveSubjectIdentity(
+  user: AuthenticatedUser,
+  requestId: string,
+): Promise<SubjectIdentity> {
+  if (user.role !== Role.Subject) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "Caller is not a Subject identity",
+      { requestId, details: { role: user.role } },
+    );
+  }
+  const subject = await prisma().subject.findFirst({
+    where: { subjectUserId: user.userId },
+    select: {
+      id: true,
+      projectId: true,
+      siteId: true,
+      subjectCode: true,
+      status: true,
+    },
+  });
+  if (!subject) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "No subject record is bound to this identity",
+      { requestId, details: { userId: user.userId } },
+    );
+  }
+  assertProjectAccess(user, subject.projectId, requestId);
+  return {
+    subjectId: subject.id,
+    projectId: subject.projectId,
+    siteId: subject.siteId,
+    subjectCode: subject.subjectCode,
+    status: subject.status as SubjectStatusT,
+  };
+}
+
+/**
+ * When a Subject-role actor uses staff ePRO endpoints, enforce that the
+ * target row belongs to their bound subject record.
+ */
+export async function assertSubjectSelfScope(
+  user: AuthenticatedUser,
+  targetSubjectId: string,
+  requestId: string,
+): Promise<void> {
+  if (user.role !== Role.Subject) return;
+  const identity = await resolveSubjectIdentity(user, requestId);
+  if (identity.subjectId !== targetSubjectId) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "Subject identity may only access own records",
+      { requestId, details: { boundSubjectId: identity.subjectId, targetSubjectId } },
+    );
+  }
+}
+
+/**
+ * Require a Subject-role caller with a bound subject record and verify the
+ * requested permission against the Subject role on the bound project.
+ */
+export async function requireSubjectActor(
+  req: FastifyRequest,
+  permission: Permission,
+): Promise<{ user: AuthenticatedUser; identity: SubjectIdentity }> {
+  const user = await requireUser(req);
+  const identity = await resolveSubjectIdentity(user, req.id);
+  const actor = resolveActorRoleForProject(user, identity.projectId, req.id);
+  authorize({ userId: actor.userId, role: actor.role }, permission, { requestId: req.id });
+  return { user, identity };
+}
+
 export function resolveActorRoleForProject(
   user: AuthenticatedUser,
   targetProjectId: string,

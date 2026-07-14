@@ -17,6 +17,7 @@ export const AuditObjectType = {
   Consent: "Consent",
   Visit: "Visit",
   QuestionnaireResponse: "QuestionnaireResponse",
+  SymptomReport: "SymptomReport",
   SafetyEvent: "SafetyEvent",
   RiskSignal: "RiskSignal",
   DrugShipment: "DrugShipment",

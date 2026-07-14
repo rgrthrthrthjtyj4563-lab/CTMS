@@ -38,6 +38,7 @@ async function main() {
   await prisma.riskHandlingRecord.deleteMany();
   await prisma.riskSignal.deleteMany();
   await prisma.safetyFollowUp.deleteMany();
+  await prisma.symptomReport.deleteMany();
   await prisma.safetyEvent.deleteMany();
   await prisma.questionnaireResponse.deleteMany();
   await prisma.remoteVisitRecord.deleteMany();
@@ -198,6 +199,36 @@ async function main() {
     subjects.push({ id: created.id, code: s.code, siteId: s.site, status: s.status });
   }
 
+  // ─── Subject mobile identities (M4A) ─────────────────────
+  const subjectUserA = await prisma.user.create({
+    data: {
+      email: "subject-a@aic-dct.test",
+      displayName: "受试者 App A",
+      phone: "139****0001",
+      roleAssignments: {
+        create: [{ projectId: project.id, siteId: site1.id, role: Role.Subject }],
+      },
+    },
+  });
+  const subjectUserB = await prisma.user.create({
+    data: {
+      email: "subject-b@aic-dct.test",
+      displayName: "受试者 App B",
+      phone: "139****0002",
+      roleAssignments: {
+        create: [{ projectId: project.id, siteId: site1.id, role: Role.Subject }],
+      },
+    },
+  });
+  await prisma.subject.update({
+    where: { id: subjects[0].id },
+    data: { subjectUserId: subjectUserA.id },
+  });
+  await prisma.subject.update({
+    where: { id: subjects[1].id },
+    data: { subjectUserId: subjectUserB.id },
+  });
+
   // ─── Consent Tasks ────────────────────────────────────────
   for (const subj of subjects) {
     const status =
@@ -248,6 +279,17 @@ async function main() {
   }
 
   // ─── Questionnaire Responses ─────────────────────────────
+  // M4A: an open Subject-channel task for mobile demo (not seed/Web staff data).
+  await prisma.questionnaireResponse.create({
+    data: {
+      questionnaireTemplateId: qolTemplate.id,
+      subjectId: subjects[0].id,
+      status: QuestionnaireStatus.Scheduled,
+      entryChannel: "SubjectSelfReport",
+      responses: {},
+    },
+  });
+
   for (const subj of subjects) {
     const s = subj.status;
     const status =
@@ -447,7 +489,11 @@ async function main() {
   console.log("Seed complete.");
   console.log({
     project: project.code, sites: [site1.code, site2.code],
-    users: [sponsor.email, croPm.email, pi1.email, crc1.email, pi2.email, cra.email, auditor.email],
+    users: [sponsor.email, croPm.email, pi1.email, crc1.email, pi2.email, cra.email, auditor.email, subjectUserA.email, subjectUserB.email],
+    subjectMobileBindings: [
+      { subject: subjects[0].code, user: subjectUserA.email },
+      { subject: subjects[1].code, user: subjectUserB.email },
+    ],
     subjects: subjects.length,
     ae: ae.id, sae: sae.id,
   });

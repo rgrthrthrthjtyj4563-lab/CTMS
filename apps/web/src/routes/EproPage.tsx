@@ -76,6 +76,7 @@ export function EproPage() {
     subjectCode: string;
     submittedAt: string | null;
     reviewedAt: string | null;
+    entryChannel: string | null;
   } | null>(null);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
@@ -120,6 +121,7 @@ export function EproPage() {
         subjectCode: d.subject.subjectCode,
         submittedAt: d.response.submittedAt,
         reviewedAt: d.response.reviewedAt,
+        entryChannel: (d.response as { entryChannel?: string }).entryChannel ?? null,
       });
       setAnswers(d.response.responses);
     } catch (e) {
@@ -347,6 +349,9 @@ export function EproPage() {
                       </div>
                       <div className="text-[11px] text-slate-500 truncate mt-0.5">
                         {r.templateName} v{r.templateVersion}
+                        {r.entryChannel === "SubjectSelfReport" ? (
+                          <span className="ml-1 text-emerald-700">· 受试者源数据</span>
+                        ) : null}
                       </div>
                     </button>
                   </li>
@@ -385,10 +390,17 @@ export function EproPage() {
                   </Tag>
                 </div>
 
+                {detail.entryChannel === "SubjectSelfReport" ? (
+                  <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-100 rounded px-2 py-1.5">
+                    本条为受试者 App 源数据，后台仅可监查与审核，不能修改或代提交原始作答。
+                  </p>
+                ) : null}
+
                 <div className="flex flex-wrap gap-2">
-                  {detail.status === "Scheduled" ||
-                  detail.status === "InProgress" ||
-                  detail.status === "Late" ? (
+                  {detail.entryChannel !== "SubjectSelfReport" &&
+                  (detail.status === "Scheduled" ||
+                    detail.status === "InProgress" ||
+                    detail.status === "Late") ? (
                     <>
                       <Button size="sm" onClick={handleSave} disabled={busy}>
                         保存草稿
@@ -431,6 +443,7 @@ export function EproPage() {
                             item={item}
                             value={answers[item.id]}
                             disabled={
+                              detail.entryChannel === "SubjectSelfReport" ||
                               detail.status === "Submitted" ||
                               detail.status === "Reviewed"
                             }

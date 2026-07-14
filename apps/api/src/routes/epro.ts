@@ -19,6 +19,7 @@ import { z } from "zod";
 import {
   ApiErrorCode,
   ApiErrorException,
+  DataEntryChannel,
   Permission,
   QuestionnaireStatus,
   Role,
@@ -29,10 +30,12 @@ import { prisma } from "../db.js";
 import {
   assertProjectAccess,
   assertQuestionnaireTransition,
+  assertSubjectSelfScope,
   audit,
   requireUser,
   resolveActorRoleForProject,
   resolveProjectScope,
+  resolveSubjectIdentity,
   type AuthenticatedUser,
 } from "../lib/auth.js";
 
@@ -139,9 +142,21 @@ export function registerEproRoutes(app: FastifyInstance): void {
       }
       const { subjectId, status, projectId, page, pageSize } = parsed.data;
       const scopeProjectId = resolveProjectScope(user, projectId, req.id);
+      let boundSubjectId: string | undefined;
+      if (user.role === Role.Subject) {
+        const identity = await resolveSubjectIdentity(user, req.id);
+        boundSubjectId = identity.subjectId;
+        if (subjectId && subjectId !== identity.subjectId) {
+          throw new ApiErrorException(
+            ApiErrorCode.FORBIDDEN,
+            "Subject identity may only list own records",
+            { requestId: req.id },
+          );
+        }
+      }
       const where: Record<string, unknown> = {
         subject: { projectId: scopeProjectId },
-        ...(subjectId ? { subjectId } : {}),
+        ...(boundSubjectId ? { subjectId: boundSubjectId } : subjectId ? { subjectId } : {}),
         ...(status ? { status: status as QuestionnaireStatusT } : {}),
       };
       const [rows, total] = await Promise.all([
@@ -233,6 +248,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
             ? (reviewerMap.get(r.reviewedByUserId) ?? null)
             : null,
           reviewedAt: r.reviewedAt?.toISOString() ?? null,
+          entryChannel: r.entryChannel,
           updatedAt: r.updatedAt.toISOString(),
         })),
       };
@@ -244,6 +260,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
     async (req) => {
       const user = await requireUser(req);
       const resp = await loadResponseScoped(user, req.params.responseId, req.id);
+      await assertSubjectSelfScope(user, resp.subjectId, req.id);
       const [subject, template, submitter, reviewer] = await Promise.all([
         prisma().subject.findUnique({
           where: { id: resp.subjectId },
@@ -270,6 +287,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
           id: resp.id,
           subjectId: resp.subjectId,
           status: resp.status,
+          entryChannel: resp.entryChannel,
           responses: resp.responses as Record<string, unknown>,
           submittedAt: resp.submittedAt?.toISOString() ?? null,
           reviewedAt: resp.reviewedAt?.toISOString() ?? null,
@@ -317,6 +335,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
       }
       // R2: enforce via caller's role assignment list.
       assertProjectAccess(user, subject.projectId, req.id);
+      await assertSubjectSelfScope(user, subject.id, req.id);
       const tpl = await prisma().questionnaireTemplate.findUnique({
         where: { id: parsed.data.questionnaireTemplateId },
       });
@@ -352,6 +371,10 @@ export function registerEproRoutes(app: FastifyInstance): void {
           visitId: parsed.data.visitId ?? null,
           questionnaireTemplateId: parsed.data.questionnaireTemplateId,
           status: QuestionnaireStatus.Scheduled,
+          entryChannel:
+            user.role === Role.Subject
+              ? DataEntryChannel.SubjectSelfReport
+              : DataEntryChannel.StaffEntry,
           responses: {},
         },
       });
@@ -377,6 +400,17 @@ export function registerEproRoutes(app: FastifyInstance): void {
       );
     }
     const resp = await loadResponseScoped(user, req.params.responseId, req.id);
+    await assertSubjectSelfScope(user, resp.subjectId, req.id);
+    if (
+      resp.entryChannel === DataEntryChannel.SubjectSelfReport &&
+      user.role !== Role.Subject
+    ) {
+      throw new ApiErrorException(
+        ApiErrorCode.FORBIDDEN,
+        "Staff cannot modify a Subject-original ePRO response",
+        { requestId: req.id, details: { responseId: resp.id, entryChannel: resp.entryChannel } },
+      );
+    }
     if (
       resp.status !== QuestionnaireStatus.Scheduled &&
       resp.status !== QuestionnaireStatus.InProgress &&
@@ -425,20 +459,37 @@ export function registerEproRoutes(app: FastifyInstance): void {
       );
     }
     const resp = await loadResponseScoped(user, req.params.responseId, req.id);
+    await assertSubjectSelfScope(user, resp.subjectId, req.id);
+    if (
+      resp.entryChannel === DataEntryChannel.SubjectSelfReport &&
+      user.role !== Role.Subject
+    ) {
+      throw new ApiErrorException(
+        ApiErrorCode.FORBIDDEN,
+        "Staff cannot submit on behalf of a Subject-original ePRO response",
+        { requestId: req.id, details: { responseId: resp.id, entryChannel: resp.entryChannel } },
+      );
+    }
     // Walk Scheduled → InProgress → Submitted in one transaction.
     assertQuestionnaireTransition(resp.status, QuestionnaireStatus.InProgress);
     assertQuestionnaireTransition(QuestionnaireStatus.InProgress, QuestionnaireStatus.Submitted);
+    const entryChannel =
+      user.role === Role.Subject
+        ? DataEntryChannel.SubjectSelfReport
+        : resp.entryChannel;
     const updated = await prisma().questionnaireResponse.update({
       where: { id: resp.id },
       data: {
         responses: parsed.data.responses as object,
         status: QuestionnaireStatus.Submitted,
+        entryChannel,
         submittedAt: new Date(),
         submittedByUserId: user.userId,
       },
     });
     await audit(req, user, "epro.response.submit", "QuestionnaireResponse", resp.id, {
       answerCount: Object.keys(parsed.data.responses).length,
+      entryChannel,
     });
     return { id: updated.id, status: updated.status };
   });

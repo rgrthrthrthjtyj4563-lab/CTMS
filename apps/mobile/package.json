@@ -1,0 +1,19 @@
+{
+  "name": "@aic-dct/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "M4A minimum Subject client harness (Expo shell deferred; smoke CLI proves E2E)",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src --ext .ts",
+    "test": "tsx src/smoke.ts",
+    "smoke": "tsx src/smoke.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "tsx": "4.19.1",
+    "typescript": "5.5.4"
+  }
+}

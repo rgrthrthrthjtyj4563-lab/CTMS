@@ -24,6 +24,7 @@ Legend:
 | subject:create |  |  | ✅ | ✅ |  |  |  |  |  |  | ✅ |
 | subject:update.status |  |  | ✅ | ✅ |  |  |  |  |  |  | ✅ |
 | subject:withdraw |  |  | ✅ |  |  |  |  |  |  |  | ✅ |
+| subject:tasks.read |  |  |  |  |  |  |  | ✅ |  |  | ✅ |
 | consent:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  | ✅ |
 | consent:sign |  |  | ✅ | ✅ |  |  |  | ✅ |  |  | ✅ |
 | consent:re-consent |  |  | ✅ |  |  |  |  |  |  |  | ✅ |
@@ -32,8 +33,9 @@ Legend:
 | visit:update |  |  | ✅ | ✅ |  |  |  |  |  |  | ✅ |
 | visit:submit |  |  | ✅ | ✅ |  |  |  |  |  |  | ✅ |
 | visit:close |  |  | ✅ |  |  |  |  |  |  |  | ✅ |
-| questionnaire:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  | ✅ |
+| questionnaire:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  | ✅ |
 | questionnaire:submit |  |  |  | ✅ |  |  |  | ✅ |  |  | ✅ |
+| symptom:report |  |  |  |  |  |  |  | ✅ |  |  | ✅ |
 | questionnaire:review |  |  | ✅ |  |  |  |  |  |  |  | ✅ |
 | safety:read | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  | ✅ |
 | safety:draft |  |  | ✅ | ✅ |  |  |  |  |  | ✅ | ✅ |

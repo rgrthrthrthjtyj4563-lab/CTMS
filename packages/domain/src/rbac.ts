@@ -34,6 +34,7 @@ export const Permission = {
   SubjectCreate: "subject:create",
   SubjectUpdateStatus: "subject:update.status",
   SubjectWithdraw: "subject:withdraw",
+  SubjectTasksRead: "subject:tasks.read",
 
   // Consent
   ConsentRead: "consent:read",
@@ -58,6 +59,7 @@ export const Permission = {
   SafetyConfirm: "safety:confirm",
   SafetyReport: "safety:report",
   SafetyClose: "safety:close",
+  SymptomReport: "symptom:report",
 
   // Risk
   RiskRead: "risk:read",
@@ -301,12 +303,15 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlyArray<Permission>> = {
     Permission.AuditRead,
   ],
 
-  // Subject mobile — minimal self-service view
+  // Subject mobile — minimal self-service view (self-scoped server-side)
   [Role.Subject]: [
     Permission.SubjectReadMasked,
+    Permission.SubjectTasksRead,
     Permission.ConsentRead,
     Permission.ConsentSign,
+    Permission.QuestionnaireRead,
     Permission.QuestionnaireSubmit,
+    Permission.SymptomReport,
   ],
 
   // Providers — narrow operational surfaces

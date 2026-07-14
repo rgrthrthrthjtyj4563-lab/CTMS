@@ -179,6 +179,33 @@ export const QUESTIONNAIRE_STATUS_TRANSITIONS: Record<
   Reviewed: [],
 };
 
+// ─── Data Entry Channel ──────────────────────────────────────
+export const DataEntryChannel = {
+  SubjectSelfReport: "SubjectSelfReport",
+  StaffEntry: "StaffEntry",
+  AssistedEntry: "AssistedEntry",
+} as const;
+export type DataEntryChannel =
+  (typeof DataEntryChannel)[keyof typeof DataEntryChannel];
+export const DataEntryChannelSchema = z.nativeEnum(DataEntryChannel);
+
+// ─── Symptom Report Status ───────────────────────────────────
+export const SymptomReportStatus = {
+  Draft: "Draft",
+  Submitted: "Submitted",
+} as const;
+export type SymptomReportStatus =
+  (typeof SymptomReportStatus)[keyof typeof SymptomReportStatus];
+export const SymptomReportStatusSchema = z.nativeEnum(SymptomReportStatus);
+
+export const SYMPTOM_REPORT_STATUS_TRANSITIONS: Record<
+  SymptomReportStatus,
+  SymptomReportStatus[]
+> = {
+  Draft: ["Submitted"],
+  Submitted: [],
+};
+
 // ─── Safety Event Status ─────────────────────────────────────
 export const SafetyEventStatus = {
   Draft: "Draft",
