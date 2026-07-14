@@ -32,6 +32,7 @@ import { prisma } from "../db.js";
 import {
   assertQuestionnaireTransition,
   audit,
+  auditTx,
   requireSubjectActor,
   type SubjectIdentity,
 } from "../lib/auth.js";
@@ -109,6 +110,23 @@ async function loadOwnResponse(
   return resp;
 }
 
+async function assertOwnedVisit(
+  identity: SubjectIdentity,
+  visitId: string,
+  requestId: string,
+): Promise<void> {
+  const visit = await prisma().visit.findUnique({
+    where: { id: visitId },
+    select: { subjectId: true },
+  });
+  if (!visit || visit.subjectId !== identity.subjectId) {
+    throw new ApiErrorException(ApiErrorCode.NOT_FOUND, "Visit not found", {
+      requestId,
+      details: { visitId },
+    });
+  }
+}
+
 async function loadOwnSymptomReport(
   identity: SubjectIdentity,
   reportId: string,
@@ -129,7 +147,7 @@ async function loadOwnSymptomReport(
 
 export function registerSubjectPortalRoutes(app: FastifyInstance): void {
   app.get("/api/subject/me", async (req) => {
-    const { user, identity } = await requireSubjectActor(req, Permission.SubjectReadMasked);
+    const { identity } = await requireSubjectActor(req, Permission.SubjectReadMasked);
     const [subject, project] = await Promise.all([
       prisma().subject.findUnique({
         where: { id: identity.subjectId },
@@ -151,9 +169,6 @@ export function registerSubjectPortalRoutes(app: FastifyInstance): void {
         requestId: req.id,
       });
     }
-    await audit(req, user, "subject.portal.me", "Subject", identity.subjectId, {
-      subjectCode: subject.subjectCode,
-    }, { projectId: identity.projectId });
     return {
       identity: {
         userId: user.userId,
@@ -373,6 +388,9 @@ export function registerSubjectPortalRoutes(app: FastifyInstance): void {
           requestId: req.id,
         });
       }
+      if (parsed.data.visitId) {
+        await assertOwnedVisit(identity, parsed.data.visitId, req.id);
+      }
       const resp = await prisma().questionnaireResponse.create({
         data: {
           subjectId: identity.subjectId,
@@ -489,76 +507,98 @@ export function registerSubjectPortalRoutes(app: FastifyInstance): void {
         });
       }
       const severe = isSevereSymptom(parsed.data);
-      const report = await prisma().symptomReport.create({
-        data: {
-          subjectId: identity.subjectId,
-          projectId: identity.projectId,
-          status: SymptomReportStatus.Submitted,
-          entryChannel: DataEntryChannel.SubjectSelfReport,
-          discomfortType: parsed.data.discomfortType,
-          onsetAt: new Date(parsed.data.onsetAt),
-          severity: parsed.data.severity,
-          soughtMedicalCare: parsed.data.soughtMedicalCare ?? false,
-          hospitalized: parsed.data.hospitalized ?? false,
-          stoppedMedication: parsed.data.stoppedMedication ?? false,
-          description: parsed.data.description,
-          submittedAt: new Date(),
-          submittedByUserId: user.userId,
-        },
-      });
-
-      let riskSignalId: string | null = null;
-      let safetyEventId: string | null = null;
-
-      if (severe) {
-        const risk = await prisma().riskSignal.create({
-          data: {
-            projectId: identity.projectId,
-            subjectId: identity.subjectId,
-            level:
-              parsed.data.severity === RiskLevel.Critical
-                ? RiskLevel.Critical
-                : RiskLevel.High,
-            type: "症状上报",
-            objectType: "SymptomReport",
-            objectId: report.id,
-            trigger: `受试者上报严重症状：${parsed.data.discomfortType}`,
-            suggestion: "请 CRC/研究者尽快联系受试者评估并按 SAE/AE 流程处置。",
-            status: RiskStatus.Open,
-          },
-        });
-        riskSignalId = risk.id;
-
-        const safety = await prisma().safetyEvent.create({
-          data: {
-            projectId: identity.projectId,
-            subjectId: identity.subjectId,
-            onsetAt: new Date(parsed.data.onsetAt),
-            description: `[Subject symptom report] ${parsed.data.description}`,
-            severity: parsed.data.severity,
-            status: SafetyEventStatus.Draft,
-            isSerious:
-              parsed.data.hospitalized === true ||
-              parsed.data.severity === RiskLevel.Critical,
-            createdByUserId: user.userId,
-          },
-        });
-        safetyEventId = safety.id;
-
-        await prisma().symptomReport.update({
-          where: { id: report.id },
-          data: { riskSignalId, safetyEventId },
-        });
-      }
-
-      await audit(req, user, "symptom.report.submit", "SymptomReport", report.id, {
+      const onsetAt = new Date(parsed.data.onsetAt);
+      const reportBase = {
+        subjectId: identity.subjectId,
+        projectId: identity.projectId,
+        status: SymptomReportStatus.Submitted,
         entryChannel: DataEntryChannel.SubjectSelfReport,
+        discomfortType: parsed.data.discomfortType,
+        onsetAt,
         severity: parsed.data.severity,
-        severe,
-        riskSignalId,
-        safetyEventId,
-        dataOrigin: "SubjectSelfReport",
-      }, { projectId: identity.projectId });
+        soughtMedicalCare: parsed.data.soughtMedicalCare ?? false,
+        hospitalized: parsed.data.hospitalized ?? false,
+        stoppedMedication: parsed.data.stoppedMedication ?? false,
+        description: parsed.data.description,
+        submittedAt: new Date(),
+        submittedByUserId: user.userId,
+      };
+
+      const { report, riskSignalId, safetyEventId } = await prisma().$transaction(
+        async (tx) => {
+          const created = await tx.symptomReport.create({ data: reportBase });
+          let linkedRiskId: string | null = null;
+          let linkedSafetyId: string | null = null;
+
+          if (severe) {
+            const risk = await tx.riskSignal.create({
+              data: {
+                projectId: identity.projectId,
+                subjectId: identity.subjectId,
+                level:
+                  parsed.data.severity === RiskLevel.Critical
+                    ? RiskLevel.Critical
+                    : RiskLevel.High,
+                type: "症状上报",
+                objectType: "SymptomReport",
+                objectId: created.id,
+                trigger: `受试者上报严重症状：${parsed.data.discomfortType}`,
+                suggestion: "请 CRC/研究者尽快联系受试者评估并按 SAE/AE 流程处置。",
+                status: RiskStatus.Open,
+              },
+            });
+            linkedRiskId = risk.id;
+
+            const safety = await tx.safetyEvent.create({
+              data: {
+                projectId: identity.projectId,
+                subjectId: identity.subjectId,
+                onsetAt,
+                description: `[Subject symptom report] ${parsed.data.description}`,
+                severity: parsed.data.severity,
+                status: SafetyEventStatus.Draft,
+                isSerious:
+                  parsed.data.hospitalized === true ||
+                  parsed.data.severity === RiskLevel.Critical,
+                createdByUserId: user.userId,
+              },
+            });
+            linkedSafetyId = safety.id;
+          }
+
+          const finalReport = await tx.symptomReport.update({
+            where: { id: created.id },
+            data: {
+              riskSignalId: linkedRiskId,
+              safetyEventId: linkedSafetyId,
+            },
+          });
+
+          await auditTx(
+            tx,
+            req,
+            user,
+            "symptom.report.submit",
+            "SymptomReport",
+            finalReport.id,
+            {
+              entryChannel: DataEntryChannel.SubjectSelfReport,
+              severity: parsed.data.severity,
+              severe,
+              riskSignalId: linkedRiskId,
+              safetyEventId: linkedSafetyId,
+              dataOrigin: "SubjectSelfReport",
+            },
+            { projectId: identity.projectId },
+          );
+
+          return {
+            report: finalReport,
+            riskSignalId: linkedRiskId,
+            safetyEventId: linkedSafetyId,
+          };
+        },
+      );
 
       return {
         id: report.id,

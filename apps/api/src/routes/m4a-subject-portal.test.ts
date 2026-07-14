@@ -30,6 +30,8 @@ interface Fx {
   subjectUserB: string;
   crcUser: string;
   scheduledResponseA: string;
+  visitA: string;
+  visitB: string;
 }
 
 async function setupFx(): Promise<Fx> {
@@ -120,6 +122,31 @@ async function setupFx(): Promise<Fx> {
       },
     })
   ).id;
+  const now = Date.now();
+  const visitA = (
+    await prisma().visit.create({
+      data: {
+        subjectId: subjectA,
+        visitCode: "V1",
+        status: "Scheduled",
+        scheduledAt: new Date(now + 86400000),
+        windowStart: new Date(now),
+        windowEnd: new Date(now + 86400000 * 7),
+      },
+    })
+  ).id;
+  const visitB = (
+    await prisma().visit.create({
+      data: {
+        subjectId: subjectB,
+        visitCode: "V1",
+        status: "Scheduled",
+        scheduledAt: new Date(now + 86400000),
+        windowStart: new Date(now),
+        windowEnd: new Date(now + 86400000 * 7),
+      },
+    })
+  ).id;
   return {
     projectId: project.id,
     siteId: site.id,
@@ -130,6 +157,8 @@ async function setupFx(): Promise<Fx> {
     subjectUserB,
     crcUser,
     scheduledResponseA,
+    visitA,
+    visitB,
   };
 }
 
@@ -145,6 +174,9 @@ async function cleanupFx(): Promise<void> {
   });
   await prisma().safetyEvent.deleteMany({
     where: { project: { code: { contains: RUN_TAG } } },
+  });
+  await prisma().visit.deleteMany({
+    where: { subject: { subjectCode: { contains: RUN_TAG } } },
   });
   await prisma().questionnaireResponse.deleteMany({
     where: { subject: { subjectCode: { contains: RUN_TAG } } },
@@ -282,6 +314,67 @@ describe("M4A subject portal", () => {
     const stored = await prisma().symptomReport.findUnique({ where: { id: body.id } });
     expect(stored?.status).toBe(SymptomReportStatus.Submitted);
     expect(stored?.entryChannel).toBe(DataEntryChannel.SubjectSelfReport);
+  });
+
+  it("non-Subject role cannot call /api/subject/me", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/subject/me",
+      headers: { "x-actor-id": fx.crcUser },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("FORBIDDEN");
+  });
+
+  it("medium symptom without severe flags does not create risk signal", async () => {
+    const report = await app.inject({
+      method: "POST",
+      url: "/api/subject/symptom-reports",
+      headers: { "x-actor-id": fx.subjectUserA },
+      payload: {
+        discomfortType: "轻度头痛",
+        onsetAt: new Date().toISOString(),
+        severity: "Medium",
+        description: "可耐受，未就医",
+      },
+    });
+    expect(report.statusCode).toBe(200);
+    const body = report.json();
+    expect(body.severe).toBe(false);
+    expect(body.riskSignalId).toBeNull();
+    expect(body.safetyEventId).toBeNull();
+  });
+
+  it("CRC cannot submit Subject-original ePRO via staff route", async () => {
+    const inProgress = await prisma().questionnaireResponse.create({
+      data: {
+        subjectId: fx.subjectA,
+        questionnaireTemplateId: fx.templateId,
+        status: QuestionnaireStatus.InProgress,
+        entryChannel: DataEntryChannel.SubjectSelfReport,
+        responses: { pain: 6 },
+      },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/epro/responses/${inProgress.id}/submit`,
+      headers: { "x-actor-id": fx.crcUser },
+      payload: { responses: { pain: 6 } },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("Subject cannot attach another subject visit when starting ePRO", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/subject/epro/responses",
+      headers: { "x-actor-id": fx.subjectUserA },
+      payload: {
+        questionnaireTemplateId: fx.templateId,
+        visitId: fx.visitB,
+      },
+    });
+    expect(res.statusCode).toBe(404);
   });
 
   it("CRC cannot PATCH Subject-original ePRO payload", async () => {
