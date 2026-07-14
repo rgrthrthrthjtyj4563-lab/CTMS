@@ -1,8 +1,5 @@
 /**
- * M4A Subject channel smoke harness.
- *
- * Proves: Subject identity → my-tasks → ePRO submit → severe symptom →
- * risk visible to staff API. Requires seeded DB + API on PORT (default 4000).
+ * Subject channel smoke harness (CLI).
  *
  * Usage:
  *   SUBJECT_ACTOR_ID=<user id> npm run smoke --workspace=apps/mobile
@@ -32,7 +29,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log("M4A smoke — Subject channel @", API_BASE);
+  console.log("Subject channel smoke @", API_BASE);
 
   const me = await api<{ subject: { subjectCode: string }; dataOrigin: string }>(
     "/api/subject/me",
@@ -52,12 +49,12 @@ async function main(): Promise<void> {
   if (draft) {
     const save = await api(`/api/subject/epro/responses/${draft.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ responses: { physical: 20 } }),
+      body: JSON.stringify({ responses: { physical_score: 18 } }),
     });
     if (save.status !== 200) throw new Error(`epro save failed: ${save.status}`);
     const submit = await api(`/api/subject/epro/responses/${draft.id}/submit`, {
       method: "POST",
-      body: JSON.stringify({ responses: { physical: 20 } }),
+      body: JSON.stringify({ responses: { physical_score: 18 } }),
     });
     if (submit.status !== 200) throw new Error(`epro submit failed: ${submit.status}`);
     console.log("✓ ePRO draft → submit", draft.id);
@@ -65,23 +62,20 @@ async function main(): Promise<void> {
     console.log("· skip ePRO submit (no open task)");
   }
 
-  const symptom = await api<{ id: string; severe: boolean; riskSignalId: string | null }>(
-    "/api/subject/symptom-reports",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        discomfortType: "恶心",
-        onsetAt: new Date().toISOString(),
-        severity: "High",
-        soughtMedicalCare: true,
-        description: "M4A smoke — 中度恶心伴就医",
-      }),
-    },
-  );
+  const symptom = await api<{ id: string; severe: boolean }>("/api/subject/symptom-reports", {
+    method: "POST",
+    body: JSON.stringify({
+      discomfortType: "恶心",
+      onsetAt: new Date().toISOString(),
+      severity: "High",
+      soughtMedicalCare: true,
+      description: "smoke — 中度恶心伴就医",
+    }),
+  });
   if (symptom.status !== 200) throw new Error(`symptom failed: ${symptom.status}`);
-  console.log("✓ symptom report", symptom.body.id, "severe=", symptom.body.severe);
+  console.log("✓ symptom report", symptom.body.id);
 
-  console.log("M4A smoke complete — data origin: SubjectSelfReport");
+  console.log("Smoke complete — SubjectSelfReport");
 }
 
 main().catch((err) => {

@@ -1,10 +1,10 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
-    "lib": ["ES2022"],
-    "types": ["node"]
+    "strict": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
-  "include": ["src/**/*.ts"]
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"]
 }

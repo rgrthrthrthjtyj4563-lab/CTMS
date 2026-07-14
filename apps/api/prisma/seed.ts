@@ -148,10 +148,34 @@ async function main() {
       version: "v1",
       schema: {
         sections: [
-          { code: "physical", items: 7 },
-          { code: "social", items: 7 },
-          { code: "emotional", items: 6 },
-          { code: "functional", items: 7 },
+          {
+            id: "physical",
+            title: "身体状况",
+            items: [
+              { id: "physical_score", type: "scale", prompt: "过去一周身体状况评分", min: 0, max: 28, required: true },
+            ],
+          },
+          {
+            id: "social",
+            title: "社会/家庭",
+            items: [
+              { id: "social_score", type: "scale", prompt: "社会/家庭状况评分", min: 0, max: 28, required: true },
+            ],
+          },
+          {
+            id: "emotional",
+            title: "情绪状况",
+            items: [
+              { id: "emotional_score", type: "scale", prompt: "情绪状况评分", min: 0, max: 24, required: true },
+            ],
+          },
+          {
+            id: "functional",
+            title: "功能状况",
+            items: [
+              { id: "functional_score", type: "scale", prompt: "日常功能状况评分", min: 0, max: 28, required: true },
+            ],
+          },
         ],
       },
     },
@@ -303,7 +327,7 @@ async function main() {
         questionnaireTemplateId: qolTemplate.id,
         subjectId: subj.id,
         status,
-        responses: { physical: 18, social: 22, emotional: 17, functional: 19 },
+        responses: { physical_score: 18, social_score: 22, emotional_score: 17, functional_score: 19 },
         submittedAt: status === QuestionnaireStatus.Submitted ? new Date() : null,
       },
     });
