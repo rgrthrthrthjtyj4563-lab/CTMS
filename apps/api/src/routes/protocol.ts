@@ -24,9 +24,11 @@ import {
   ApiErrorCode,
   ApiErrorException,
   AuditAction,
+  HumanConfirmationStatus,
   Permission,
   ProtocolParseStatus,
   authorize,
+  canPromoteAIOutput,
   canTransition,
   PROTOCOL_PARSE_TRANSITIONS,
   type ProtocolParseStatus as ProtocolParseStatusT,
@@ -39,7 +41,14 @@ import type {
   User,
 } from "@prisma/client";
 import { prisma } from "../db.js";
-import { audit, requireUser } from "../lib/auth.js";
+import {
+  assertProjectAccess,
+  audit,
+  requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
+  type AuthenticatedUser,
+} from "../lib/auth.js";
 
 const listQuerySchema = z.object({
   projectId: z.string().optional(),
@@ -72,8 +81,9 @@ function assertProtocolTransition(
 }
 
 async function loadVersionScoped(
-  user: { projectId: string },
+  user: AuthenticatedUser,
   versionId: string,
+  requestId: string,
 ) {
   const version = await prisma().protocolVersion.findUnique({
     where: { id: versionId },
@@ -82,16 +92,12 @@ async function loadVersionScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Protocol version not found",
-      { details: { versionId } },
+      { requestId, details: { versionId } },
     );
   }
-  if (version.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Protocol version belongs to a different project",
-      { details: { versionId } },
-    );
-  }
+  // R2: enforce via the caller's full role assignment list (not the
+  // single primary project).
+  assertProjectAccess(user, version.projectId, requestId);
   return version;
 }
 
@@ -111,8 +117,9 @@ export function registerProtocolRoutes(app: FastifyInstance): void {
         );
       }
       const { projectId, parseStatus, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where = {
-        projectId: projectId ?? user.projectId,
+        projectId: scopeProjectId,
         ...(parseStatus ? { parseStatus } : {}),
       };
       const [rows, total] = await Promise.all([
@@ -148,7 +155,7 @@ export function registerProtocolRoutes(app: FastifyInstance): void {
     async (req) => {
       const user = await requireUser(req);
       authorize(user, Permission.ProjectRead, { requestId: req.id });
-      const version = await loadVersionScoped(user, req.params.versionId);
+      const version = await loadVersionScoped(user, req.params.versionId, req.id);
       const [parseResults, auditTrail] = await Promise.all([
         prisma().aIProtocolParseResult.findMany({
           where: { protocolVersionId: version.id },
@@ -227,13 +234,16 @@ export function registerProtocolRoutes(app: FastifyInstance): void {
           { requestId: req.id, details: { issues: parsed.error.issues } },
         );
       }
-      if (parsed.data.projectId !== user.projectId) {
-        throw new ApiErrorException(
-          ApiErrorCode.FORBIDDEN,
-          "Cannot upload protocol version to a different project",
-          { requestId: req.id, details: { projectId: parsed.data.projectId } },
-        );
-      }
+      // R2: the caller must hold an assignment on the target project.
+      assertProjectAccess(user, parsed.data.projectId, req.id);
+      // R1: parse permission evaluated against the actor's role on the
+      // target project (NOT the role on the caller's primary project).
+      const uploadActor = resolveActorRoleForProject(user, parsed.data.projectId, req.id);
+      authorize(
+        { userId: uploadActor.userId, role: uploadActor.role },
+        Permission.ProtocolParse,
+        { requestId: req.id },
+      );
       // Enforce uniqueness: (projectId, version) is unique in schema.
       // Fail fast with a clean error so the UI can prompt for a new version.
       const existing = await prisma().protocolVersion.findFirst({
@@ -283,12 +293,51 @@ export function registerProtocolRoutes(app: FastifyInstance): void {
     "/api/protocol/versions/:versionId/parse",
     async (req) => {
       const user = await requireUser(req);
-      authorize(user, Permission.ProtocolParse, { requestId: req.id });
-      const version = await loadVersionScoped(user, req.params.versionId);
+      const version = await loadVersionScoped(user, req.params.versionId, req.id);
+      const parseActor = resolveActorRoleForProject(user, version.projectId, req.id);
+      authorize(
+        { userId: parseActor.userId, role: parseActor.role },
+        Permission.ProtocolParse,
+        { requestId: req.id },
+      );
       assertProtocolTransition(version.parseStatus, ProtocolParseStatus.Parsing);
       const updated = await prisma().protocolVersion.update({
         where: { id: version.id },
         data: { parseStatus: ProtocolParseStatus.Parsing },
+      });
+      await audit(
+        req,
+        user,
+        AuditAction.StatusChange,
+        "ProtocolVersion",
+        updated.id,
+        { to: updated.parseStatus },
+        { beforeValue: { parseStatus: version.parseStatus } },
+      );
+      return { id: updated.id, parseStatus: updated.parseStatus };
+    },
+  );
+
+  /* ─── Submit For Review (Parsed → UnderReview; sponsor/CROPM) ──
+   * The Phase 3 worker only advances through Parsing → Parsed. To get a
+   * version to UnderReview (the only state from which `activate` is
+   * reachable), an operator must explicitly call submit-for-review. This
+   * preserves the audit trail and the state machine. */
+  app.post<{ Params: { versionId: string } }>(
+    "/api/protocol/versions/:versionId/submit-for-review",
+    async (req) => {
+      const user = await requireUser(req);
+      const version = await loadVersionScoped(user, req.params.versionId, req.id);
+      const actor = resolveActorRoleForProject(user, version.projectId, req.id);
+      authorize(
+        { userId: actor.userId, role: actor.role },
+        Permission.ProtocolParse,
+        { requestId: req.id },
+      );
+      assertProtocolTransition(version.parseStatus, ProtocolParseStatus.UnderReview);
+      const updated = await prisma().protocolVersion.update({
+        where: { id: version.id },
+        data: { parseStatus: ProtocolParseStatus.UnderReview },
       });
       await audit(
         req,
@@ -309,7 +358,13 @@ export function registerProtocolRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof activateSchema>;
   }>("/api/protocol/versions/:versionId/activate", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.ProtocolActivate, { requestId: req.id });
+    const version = await loadVersionScoped(user, req.params.versionId, req.id);
+    const activateActor = resolveActorRoleForProject(user, version.projectId, req.id);
+    authorize(
+      { userId: activateActor.userId, role: activateActor.role },
+      Permission.ProtocolActivate,
+      { requestId: req.id },
+    );
     const parsed = activateSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -318,7 +373,54 @@ export function registerProtocolRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const version = await loadVersionScoped(user, req.params.versionId);
+    // ── Phase 3 / Task 3.7 AI gate ──────────────────────────
+    // The activate endpoint MUST refuse to fire if the protocol
+    // version's linked AI parse output is still Pending (or any
+    // status that is not Adopted / EditedAdopted). This is enforced
+    // server-side; hiding the button in the Web UI is not sufficient.
+    // A "purely manual" version (no AI artifact) is allowed.
+    const linkedParseResults = await prisma().aIProtocolParseResult.findMany({
+      where: { protocolVersionId: version.id },
+      include: { aiOutput: true },
+    });
+    const pendingOutputs = linkedParseResults.filter(
+      (r) =>
+        r.aiOutput &&
+        r.aiOutput.status !== HumanConfirmationStatus.Adopted &&
+        r.aiOutput.status !== HumanConfirmationStatus.EditedAdopted,
+    );
+    if (pendingOutputs.length > 0) {
+      throw new ApiErrorException(
+        ApiErrorCode.AI_CONFIRMATION_REQUIRED,
+        "Protocol version has unadopted AI parse output(s); adopt or reject them before activation",
+        {
+          requestId: req.id,
+          details: {
+            versionId: version.id,
+            pendingAiOutputIds: pendingOutputs
+              .map((r) => r.aiOutput?.id ?? null)
+              .filter((v): v is string => Boolean(v)),
+          },
+        },
+      );
+    }
+    // Defense-in-depth: if there are any parse results with an adopted
+    // AIOutput but `canPromoteAIOutput` returns false (impossible in the
+    // current schema, but future-proof), refuse.
+    for (const r of linkedParseResults) {
+      if (
+        r.aiOutput &&
+        // canPromoteAIOutput only reads `status`; the prisma AIOutput
+        // is structurally compatible with the domain AIOutput shape.
+        !canPromoteAIOutput(r.aiOutput as unknown as Parameters<typeof canPromoteAIOutput>[0])
+      ) {
+        throw new ApiErrorException(
+          ApiErrorCode.AI_CONFIRMATION_REQUIRED,
+          "Linked AI output is not promotable",
+          { requestId: req.id, details: { aiOutputId: r.aiOutput.id } },
+        );
+      }
+    }
     assertProtocolTransition(version.parseStatus, ProtocolParseStatus.Effective);
     // Find the prior Effective version (if any) so we can flip it to
     // Superseded. The active project's "currently effective" version is

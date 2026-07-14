@@ -19,15 +19,20 @@ import { z } from "zod";
 import {
   ApiErrorCode,
   ApiErrorException,
+  Permission,
   QuestionnaireStatus,
   Role,
+  authorize,
   type QuestionnaireStatus as QuestionnaireStatusT,
 } from "@aic-dct/domain";
 import { prisma } from "../db.js";
 import {
+  assertProjectAccess,
   assertQuestionnaireTransition,
   audit,
   requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
   type AuthenticatedUser,
 } from "../lib/auth.js";
 
@@ -38,6 +43,7 @@ const listTemplatesSchema = z.object({
 const listResponsesSchema = z.object({
   subjectId: z.string().optional(),
   status: z.string().optional(),
+  projectId: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
 });
@@ -102,7 +108,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
           { requestId: req.id, details: { issues: parsed.error.issues } },
         );
       }
-      const projectId = parsed.data.projectId ?? user.projectId;
+      const projectId = resolveProjectScope(user, parsed.data.projectId, req.id);
       const rows = await prisma().questionnaireTemplate.findMany({
         where: { projectId },
         orderBy: [{ name: "asc" }, { version: "asc" }],
@@ -131,9 +137,10 @@ export function registerEproRoutes(app: FastifyInstance): void {
           { requestId: req.id, details: { issues: parsed.error.issues } },
         );
       }
-      const { subjectId, status, page, pageSize } = parsed.data;
+      const { subjectId, status, projectId, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where: Record<string, unknown> = {
-        subject: { projectId: user.projectId },
+        subject: { projectId: scopeProjectId },
         ...(subjectId ? { subjectId } : {}),
         ...(status ? { status: status as QuestionnaireStatusT } : {}),
       };
@@ -236,7 +243,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
     "/api/epro/responses/:responseId",
     async (req) => {
       const user = await requireUser(req);
-      const resp = await loadResponseScoped(user, req.params.responseId);
+      const resp = await loadResponseScoped(user, req.params.responseId, req.id);
       const [subject, template, submitter, reviewer] = await Promise.all([
         prisma().subject.findUnique({
           where: { id: resp.subjectId },
@@ -301,23 +308,44 @@ export function registerEproRoutes(app: FastifyInstance): void {
       const subject = await prisma().subject.findUnique({
         where: { id: parsed.data.subjectId },
       });
-      if (!subject || subject.projectId !== user.projectId) {
+      if (!subject) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
           "Subject not found",
           { requestId: req.id },
         );
       }
+      // R2: enforce via caller's role assignment list.
+      assertProjectAccess(user, subject.projectId, req.id);
       const tpl = await prisma().questionnaireTemplate.findUnique({
         where: { id: parsed.data.questionnaireTemplateId },
       });
-      if (!tpl || tpl.projectId !== user.projectId) {
+      if (!tpl) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
           "Template not found",
           { requestId: req.id },
         );
       }
+      // R2: template must belong to a project the caller can reach.
+      assertProjectAccess(user, tpl.projectId, req.id);
+      // Subject + template must live in the same project; otherwise
+      // refuse to forge a cross-project response.
+      if (subject.projectId !== tpl.projectId) {
+        throw new ApiErrorException(
+          ApiErrorCode.VALIDATION_ERROR,
+          "Subject and template must belong to the same project",
+          { requestId: req.id, details: { subjectProject: subject.projectId, templateProject: tpl.projectId } },
+        );
+      }
+      // R1: write permission evaluated against the actor's role on the
+      // target project.
+      const startActor = resolveActorRoleForProject(user, subject.projectId, req.id);
+      authorize(
+        { userId: startActor.userId, role: startActor.role },
+        Permission.QuestionnaireSubmit,
+        { requestId: req.id },
+      );
       const resp = await prisma().questionnaireResponse.create({
         data: {
           subjectId: parsed.data.subjectId,
@@ -348,7 +376,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const resp = await loadResponseScoped(user, req.params.responseId);
+    const resp = await loadResponseScoped(user, req.params.responseId, req.id);
     if (
       resp.status !== QuestionnaireStatus.Scheduled &&
       resp.status !== QuestionnaireStatus.InProgress &&
@@ -396,7 +424,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const resp = await loadResponseScoped(user, req.params.responseId);
+    const resp = await loadResponseScoped(user, req.params.responseId, req.id);
     // Walk Scheduled → InProgress → Submitted in one transaction.
     assertQuestionnaireTransition(resp.status, QuestionnaireStatus.InProgress);
     assertQuestionnaireTransition(QuestionnaireStatus.InProgress, QuestionnaireStatus.Submitted);
@@ -435,7 +463,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const resp = await loadResponseScoped(user, req.params.responseId);
+    const resp = await loadResponseScoped(user, req.params.responseId, req.id);
     assertQuestionnaireTransition(resp.status, QuestionnaireStatus.Reviewed);
     const updated = await prisma().questionnaireResponse.update({
       where: { id: resp.id },
@@ -455,6 +483,7 @@ export function registerEproRoutes(app: FastifyInstance): void {
 async function loadResponseScoped(
   user: AuthenticatedUser,
   responseId: string,
+  requestId: string,
 ) {
   const resp = await prisma().questionnaireResponse.findUnique({
     where: { id: responseId },
@@ -463,19 +492,21 @@ async function loadResponseScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Response not found",
-      { details: { responseId } },
+      { requestId, details: { responseId } },
     );
   }
   const subject = await prisma().subject.findUnique({
     where: { id: resp.subjectId },
   });
-  if (!subject || subject.projectId !== user.projectId) {
+  if (!subject) {
     throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Response belongs to a different project",
-      { details: { responseId } },
+      ApiErrorCode.NOT_FOUND,
+      "Subject not found",
+      { requestId, details: { responseId } },
     );
   }
+  // R2: enforce via caller's full role assignment list.
+  assertProjectAccess(user, subject.projectId, requestId);
   return resp;
 }
 

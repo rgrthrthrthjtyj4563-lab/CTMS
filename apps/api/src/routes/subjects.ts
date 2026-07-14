@@ -17,13 +17,16 @@ import { z } from "zod";
 import {
   ApiErrorCode,
   ApiErrorException,
+  Permission,
   Role,
   SubjectStatus,
+  authorize,
   type SubjectStatus as SubjectStatusT,
 } from "@aic-dct/domain";
 import { prisma } from "../db.js";
 import {
   audit,
+  assertProjectAccess,
   assertSubjectTransition,
   canUnmaskPII,
   maskEmail,
@@ -31,6 +34,8 @@ import {
   maskNationalId,
   maskPhone,
   requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
   type AuthenticatedUser,
 } from "../lib/auth.js";
 
@@ -92,8 +97,9 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
         );
       }
       const { projectId, status, siteId, search, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where = {
-        projectId: projectId ?? user.projectId,
+        projectId: scopeProjectId,
         ...(status ? { status: status as SubjectStatusT } : {}),
         ...(siteId ? { siteId } : {}),
         ...(search
@@ -157,16 +163,27 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
         );
       }
       const site = await prisma().site.findUnique({ where: { id: parsed.data.siteId } });
-      if (!site || site.projectId !== user.projectId) {
+      if (!site) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
-          "Site not found in current project",
+          "Site not found",
           { requestId: req.id },
         );
       }
+      // R2: site must belong to a project the caller is assigned to.
+      assertProjectAccess(user, site.projectId, req.id);
+      // R1: resolve the actor's role on the target project before
+      // creating the subject so a Sponsor on project A cannot create
+      // a subject on project B using project-A authority.
+      const createActor = resolveActorRoleForProject(user, site.projectId, req.id);
+      authorize(
+        { userId: createActor.userId, role: createActor.role },
+        Permission.SubjectCreate,
+        { requestId: req.id },
+      );
       const created = await prisma().subject.create({
         data: {
-          projectId: user.projectId,
+          projectId: site.projectId,
           siteId: parsed.data.siteId,
           subjectCode: parsed.data.subjectCode,
           initials: parsed.data.initials ?? null,
@@ -190,7 +207,7 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
     "/api/subjects/:subjectId",
     async (req) => {
       const user = await requireUser(req);
-      const subject = await loadSubjectScoped(user, req.params.subjectId);
+      const subject = await loadSubjectScoped(user, req.params.subjectId, req.id);
       const [visits, risks, consents, aeCount, taskCount] = await Promise.all([
         prisma().visit.findMany({
           where: { subjectId: subject.id },
@@ -271,7 +288,7 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
           { requestId: req.id },
         );
       }
-      const subject = await loadSubjectScoped(user, req.params.subjectId);
+      const subject = await loadSubjectScoped(user, req.params.subjectId, req.id);
       const identity = await prisma().subjectSensitiveIdentity.findUnique({
         where: { subjectId: subject.id },
       });
@@ -311,7 +328,7 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const subject = await loadSubjectScoped(user, req.params.subjectId);
+    const subject = await loadSubjectScoped(user, req.params.subjectId, req.id);
     assertSubjectTransition(subject.status, parsed.data.to);
     const updated = await prisma().subject.update({
       where: { id: subject.id },
@@ -346,7 +363,7 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const subject = await loadSubjectScoped(user, req.params.subjectId);
+    const subject = await loadSubjectScoped(user, req.params.subjectId, req.id);
     assertSubjectTransition(subject.status, SubjectStatus.Withdrawn);
     const updated = await prisma().subject.update({
       where: { id: subject.id },
@@ -372,6 +389,7 @@ export function registerSubjectRoutes(app: FastifyInstance): void {
 async function loadSubjectScoped(
   user: AuthenticatedUser,
   subjectId: string,
+  requestId: string,
 ) {
   const subject = await prisma().subject.findUnique({
     where: { id: subjectId },
@@ -381,16 +399,13 @@ async function loadSubjectScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Subject not found",
-      { requestId: "scoped", details: { subjectId } },
+      { requestId, details: { subjectId } },
     );
   }
-  if (subject.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Subject belongs to a different project",
-      { details: { subjectId } },
-    );
-  }
+  // R2: enforce via the caller's full role assignment list (not the
+  // single primary project) so a Sponsor on projects A + B can read
+  // both, and a CRA on project A cannot read project-B subjects.
+  assertProjectAccess(user, subject.projectId, requestId);
   return subject;
 }
 

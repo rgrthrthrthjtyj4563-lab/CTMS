@@ -38,7 +38,14 @@ import type {
   User,
 } from "@prisma/client";
 import { prisma } from "../db.js";
-import { audit, requireUser } from "../lib/auth.js";
+import {
+  assertProjectAccess,
+  audit,
+  requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
+  type AuthenticatedUser,
+} from "../lib/auth.js";
 
 const listQuerySchema = z.object({
   projectId: z.string().optional(),
@@ -90,8 +97,9 @@ function assertSafetyTransition(
 }
 
 async function loadEventScoped(
-  user: { projectId: string },
+  user: AuthenticatedUser,
   eventId: string,
+  requestId: string,
 ) {
   const event = await prisma().safetyEvent.findUnique({
     where: { id: eventId },
@@ -101,17 +109,29 @@ async function loadEventScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Safety event not found",
-      { details: { eventId } },
+      { requestId, details: { eventId } },
     );
   }
-  if (event.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Safety event belongs to a different project",
-      { details: { eventId } },
-    );
-  }
+  // R2: enforce via the caller's full role assignment list (not the
+  // single primary project).
+  assertProjectAccess(user, event.projectId, requestId);
   return event;
+}
+
+/**
+ * R1 closure helper: after `loadEventScoped` resolves the event row and
+ * confirms project access, re-check the relevant permission against the
+ * actor's role on the event's project. This prevents a Sponsor on
+ * project A from confirming an event that lives in project B.
+ */
+function authorizeOnProject(
+  user: AuthenticatedUser,
+  projectId: string,
+  permission: Permission,
+  requestId: string,
+): void {
+  const actor = resolveActorRoleForProject(user, projectId, requestId);
+  authorize({ userId: actor.userId, role: actor.role }, permission, { requestId });
 }
 
 export function registerSafetyRoutes(app: FastifyInstance): void {
@@ -130,8 +150,9 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         );
       }
       const { projectId, subjectId, status, severity, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where = {
-        projectId: projectId ?? user.projectId,
+        projectId: scopeProjectId,
         ...(subjectId ? { subjectId } : {}),
         ...(status ? { status } : {}),
         ...(severity ? { severity } : {}),
@@ -185,7 +206,7 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     async (req) => {
       const user = await requireUser(req);
       authorize(user, Permission.SafetyRead, { requestId: req.id });
-      const event = await loadEventScoped(user, req.params.eventId);
+      const event = await loadEventScoped(user, req.params.eventId, req.id);
       const [followUps, auditTrail] = await Promise.all([
         prisma().safetyFollowUp.findMany({
           where: { safetyEventId: event.id },
@@ -253,16 +274,26 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
       const subject = await prisma().subject.findUnique({
         where: { id: parsed.data.subjectId },
       });
-      if (!subject || subject.projectId !== user.projectId) {
+      if (!subject) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
-          "Subject not found in current project",
+          "Subject not found",
           { requestId: req.id, details: { subjectId: parsed.data.subjectId } },
         );
       }
+      // R2: enforce via caller's role assignment list.
+      assertProjectAccess(user, subject.projectId, req.id);
+      // R1: draft permission evaluated against the actor's role on the
+      // subject's project (NOT the primary project role).
+      const draftActor = resolveActorRoleForProject(user, subject.projectId, req.id);
+      authorize(
+        { userId: draftActor.userId, role: draftActor.role },
+        Permission.SafetyDraft,
+        { requestId: req.id },
+      );
       const created = await prisma().safetyEvent.create({
         data: {
-          projectId: user.projectId,
+          projectId: subject.projectId,
           subjectId: parsed.data.subjectId,
           onsetAt: new Date(parsed.data.onsetAt),
           description: parsed.data.description,
@@ -295,7 +326,8 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof confirmSchema>;
   }>("/api/safety/events/:eventId/confirm", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.SafetyConfirm, { requestId: req.id });
+    const event = await loadEventScoped(user, req.params.eventId, req.id);
+    authorizeOnProject(user, event.projectId, Permission.SafetyConfirm, req.id);
     const parsed = confirmSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -314,7 +346,6 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { outcome: parsed.data.outcome } },
       );
     }
-    const event = await loadEventScoped(user, req.params.eventId);
     if (event.status !== SafetyEventStatus.Draft) {
       throw new ApiErrorException(
         ApiErrorCode.STATE_TRANSITION_INVALID,
@@ -359,7 +390,8 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof reportSchema>;
   }>("/api/safety/events/:eventId/report", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.SafetyReport, { requestId: req.id });
+    const event = await loadEventScoped(user, req.params.eventId, req.id);
+    authorizeOnProject(user, event.projectId, Permission.SafetyReport, req.id);
     const parsed = reportSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -368,7 +400,6 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const event = await loadEventScoped(user, req.params.eventId);
     if (!event.isSerious) {
       throw new ApiErrorException(
         ApiErrorCode.VALIDATION_ERROR,
@@ -406,7 +437,8 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof followUpSchema>;
   }>("/api/safety/events/:eventId/follow-up", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.SafetyDraft, { requestId: req.id });
+    const event = await loadEventScoped(user, req.params.eventId, req.id);
+    authorizeOnProject(user, event.projectId, Permission.SafetyDraft, req.id);
     const parsed = followUpSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -415,7 +447,6 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const event = await loadEventScoped(user, req.params.eventId);
     if (event.status === SafetyEventStatus.Closed) {
       throw new ApiErrorException(
         ApiErrorCode.STATE_TRANSITION_INVALID,
@@ -462,7 +493,8 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof closeSchema>;
   }>("/api/safety/events/:eventId/close", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.SafetyClose, { requestId: req.id });
+    const event = await loadEventScoped(user, req.params.eventId, req.id);
+    authorizeOnProject(user, event.projectId, Permission.SafetyClose, req.id);
     const parsed = closeSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -471,7 +503,6 @@ export function registerSafetyRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const event = await loadEventScoped(user, req.params.eventId);
     if (event.status === SafetyEventStatus.Closed) {
       throw new ApiErrorException(
         ApiErrorCode.STATE_TRANSITION_INVALID,

@@ -48,7 +48,14 @@ import type {
   User,
 } from "@prisma/client";
 import { prisma } from "../db.js";
-import { audit, requireUser } from "../lib/auth.js";
+import {
+  assertProjectAccess,
+  audit,
+  requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
+  type AuthenticatedUser,
+} from "../lib/auth.js";
 
 const listQuerySchema = z.object({
   projectId: z.string().optional(),
@@ -89,9 +96,26 @@ function assertRiskTransition(
   }
 }
 
+/**
+ * R1 closure helper: after `loadRiskScoped` resolves the row and confirms
+ * project access, re-check the relevant permission against the actor's
+ * role on the risk's project. A Sponsor on project A cannot assign /
+ * resolve / close / reject a risk on project B using project-A authority.
+ */
+function authorizeOnRiskProject(
+  user: AuthenticatedUser,
+  projectId: string,
+  permission: Permission,
+  requestId: string,
+): void {
+  const actor = resolveActorRoleForProject(user, projectId, requestId);
+  authorize({ userId: actor.userId, role: actor.role }, permission, { requestId });
+}
+
 async function loadRiskScoped(
-  user: { projectId: string },
+  user: AuthenticatedUser,
   riskId: string,
+  requestId: string,
 ) {
   const risk = await prisma().riskSignal.findUnique({
     where: { id: riskId },
@@ -101,16 +125,11 @@ async function loadRiskScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Risk signal not found",
-      { details: { riskId } },
+      { requestId, details: { riskId } },
     );
   }
-  if (risk.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Risk signal belongs to a different project",
-      { details: { riskId } },
-    );
-  }
+  // R2: enforce via caller's full role assignment list.
+  assertProjectAccess(user, risk.projectId, requestId);
   return risk;
 }
 
@@ -131,8 +150,9 @@ export function registerRiskRoutes(app: FastifyInstance): void {
       }
       const { projectId, level, status, type, ownerId, page, pageSize } =
         parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where = {
-        projectId: projectId ?? user.projectId,
+        projectId: scopeProjectId,
         ...(level ? { level } : {}),
         ...(status ? { status } : {}),
         ...(type ? { type } : {}),
@@ -195,7 +215,7 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     async (req) => {
       const user = await requireUser(req);
       authorize(user, Permission.RiskRead, { requestId: req.id });
-      const risk = await loadRiskScoped(user, req.params.riskId);
+      const risk = await loadRiskScoped(user, req.params.riskId, req.id);
       const [handling, auditTrail] = await Promise.all([
         prisma().riskHandlingRecord.findMany({
           where: { riskSignalId: risk.id },
@@ -280,7 +300,8 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof assignSchema>;
   }>("/api/risks/:riskId/assign", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.RiskAssign, { requestId: req.id });
+    const risk = await loadRiskScoped(user, req.params.riskId, req.id);
+    authorizeOnRiskProject(user, risk.projectId, Permission.RiskAssign, req.id);
     const parsed = assignSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -289,7 +310,6 @@ export function registerRiskRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const risk = await loadRiskScoped(user, req.params.riskId);
     assertRiskTransition(risk.status, RiskStatus.Assigned);
     const owner = await prisma().user.findUnique({
       where: { id: parsed.data.ownerUserId },
@@ -336,8 +356,8 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     "/api/risks/:riskId/start",
     async (req) => {
       const user = await requireUser(req);
-      authorize(user, Permission.RiskResolve, { requestId: req.id });
-      const risk = await loadRiskScoped(user, req.params.riskId);
+      const risk = await loadRiskScoped(user, req.params.riskId, req.id);
+      authorizeOnRiskProject(user, risk.projectId, Permission.RiskResolve, req.id);
       assertRiskTransition(risk.status, RiskStatus.InProgress);
       // Audit-before-mutate (protocol activate pattern): ensure the audit
       // chain accepts the transition before flipping status. Start has no
@@ -375,7 +395,8 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof resolveSchema>;
   }>("/api/risks/:riskId/resolve", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.RiskResolve, { requestId: req.id });
+    const risk = await loadRiskScoped(user, req.params.riskId, req.id);
+    authorizeOnRiskProject(user, risk.projectId, Permission.RiskResolve, req.id);
     const parsed = resolveSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -384,7 +405,6 @@ export function registerRiskRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const risk = await loadRiskScoped(user, req.params.riskId);
     assertRiskTransition(risk.status, RiskStatus.Resolved);
     const updated = await prisma().riskSignal.update({
       where: { id: risk.id },
@@ -423,7 +443,8 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof closeSchema>;
   }>("/api/risks/:riskId/close", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.RiskClose, { requestId: req.id });
+    const risk = await loadRiskScoped(user, req.params.riskId, req.id);
+    authorizeOnRiskProject(user, risk.projectId, Permission.RiskClose, req.id);
     const parsed = closeSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -432,7 +453,6 @@ export function registerRiskRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const risk = await loadRiskScoped(user, req.params.riskId);
     assertRiskTransition(risk.status, RiskStatus.Closed);
     const updated = await prisma().riskSignal.update({
       where: { id: risk.id },
@@ -473,7 +493,8 @@ export function registerRiskRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof rejectSchema>;
   }>("/api/risks/:riskId/reject", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.RiskClose, { requestId: req.id });
+    const risk = await loadRiskScoped(user, req.params.riskId, req.id);
+    authorizeOnRiskProject(user, risk.projectId, Permission.RiskClose, req.id);
     const parsed = rejectSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -482,7 +503,6 @@ export function registerRiskRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const risk = await loadRiskScoped(user, req.params.riskId);
     assertRiskTransition(risk.status, RiskStatus.Rejected);
     const updated = await prisma().riskSignal.update({
       where: { id: risk.id },

@@ -21,15 +21,20 @@ import { z } from "zod";
 import {
   ApiErrorCode,
   ApiErrorException,
+  Permission,
   Role,
   VisitStatus,
+  authorize,
   type VisitStatus as VisitStatusT,
 } from "@aic-dct/domain";
 import { prisma } from "../db.js";
 import {
+  assertProjectAccess,
   assertVisitTransition,
   audit,
   requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
   type AuthenticatedUser,
 } from "../lib/auth.js";
 
@@ -88,8 +93,9 @@ export function registerVisitRoutes(app: FastifyInstance): void {
         );
       }
       const { projectId, subjectId, status, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where = {
-        subject: { projectId: projectId ?? user.projectId },
+        subject: { projectId: scopeProjectId },
         ...(subjectId ? { subjectId } : {}),
         ...(status ? { status: status as VisitStatusT } : {}),
       };
@@ -158,13 +164,25 @@ export function registerVisitRoutes(app: FastifyInstance): void {
       const subject = await prisma().subject.findUnique({
         where: { id: parsed.data.subjectId },
       });
-      if (!subject || subject.projectId !== user.projectId) {
+      if (!subject) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
           "Subject not found",
-          { requestId: req.id },
+          { requestId: req.id, details: { subjectId: parsed.data.subjectId } },
         );
       }
+      // R2: enforce via the caller's role assignment list.
+      assertProjectAccess(user, subject.projectId, req.id);
+      // R1: schedule permission evaluated against the actor's role on
+      // the subject's project, NOT the role on the caller's primary
+      // project. A Sponsor on project A cannot schedule a visit on a
+      // subject that lives in project B.
+      const scheduleActor = resolveActorRoleForProject(user, subject.projectId, req.id);
+      authorize(
+        { userId: scheduleActor.userId, role: scheduleActor.role },
+        Permission.VisitUpdate,
+        { requestId: req.id },
+      );
       const visit = await prisma().visit.create({
         data: {
           subjectId: parsed.data.subjectId,
@@ -191,7 +209,7 @@ export function registerVisitRoutes(app: FastifyInstance): void {
     "/api/visits/:visitId",
     async (req) => {
       const user = await requireUser(req);
-      const visit = await loadVisitScoped(user, req.params.visitId);
+      const visit = await loadVisitScoped(user, req.params.visitId, req.id);
       return {
         visit: {
           id: visit.id,
@@ -236,7 +254,7 @@ export function registerVisitRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const visit = await loadVisitScoped(user, req.params.visitId);
+    const visit = await loadVisitScoped(user, req.params.visitId, req.id);
     assertVisitTransition(visit.status, parsed.data.to);
     const updated = await prisma().visit.update({
       where: { id: visit.id },
@@ -270,7 +288,7 @@ export function registerVisitRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const visit = await loadVisitScoped(user, req.params.visitId);
+    const visit = await loadVisitScoped(user, req.params.visitId, req.id);
     if (visit.remoteSession) {
       throw new ApiErrorException(
         ApiErrorCode.VALIDATION_ERROR,
@@ -312,7 +330,7 @@ export function registerVisitRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const visit = await loadVisitScoped(user, req.params.visitId);
+    const visit = await loadVisitScoped(user, req.params.visitId, req.id);
     const task = await prisma().visitTask.findUnique({
       where: { id: req.params.taskId },
     });
@@ -345,6 +363,7 @@ export function registerVisitRoutes(app: FastifyInstance): void {
 async function loadVisitScoped(
   user: AuthenticatedUser,
   visitId: string,
+  requestId: string,
 ) {
   const visit = await prisma().visit.findUnique({
     where: { id: visitId },
@@ -358,15 +377,10 @@ async function loadVisitScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Visit not found",
-      { details: { visitId } },
+      { requestId, details: { visitId } },
     );
   }
-  if (visit.subject.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Visit belongs to a different project",
-      { details: { visitId } },
-    );
-  }
+  // R2: enforce via the caller's full role assignment list.
+  assertProjectAccess(user, visit.subject.projectId, requestId);
   return visit;
 }

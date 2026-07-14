@@ -19,14 +19,19 @@ import {
   ApiErrorCode,
   ApiErrorException,
   ConsentStatus,
+  Permission,
   Role,
+  authorize,
   type ConsentStatus as ConsentStatusT,
 } from "@aic-dct/domain";
 import { prisma } from "../db.js";
 import {
   assertConsentTransition,
+  assertProjectAccess,
   audit,
   requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
   type AuthenticatedUser,
 } from "../lib/auth.js";
 
@@ -79,8 +84,9 @@ export function registerConsentRoutes(app: FastifyInstance): void {
         );
       }
       const { projectId, status, subjectId, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where: Record<string, unknown> = {
-        subject: { projectId: projectId ?? user.projectId },
+        subject: { projectId: scopeProjectId },
         ...(status ? { status: status as ConsentStatusT } : {}),
         ...(subjectId ? { subjectId } : {}),
       };
@@ -124,7 +130,7 @@ export function registerConsentRoutes(app: FastifyInstance): void {
     "/api/consent/:taskId",
     async (req) => {
       const user = await requireUser(req);
-      const task = await loadTaskScoped(user, req.params.taskId);
+      const task = await loadTaskScoped(user, req.params.taskId, req.id);
       return {
         task: {
           id: task.id,
@@ -170,23 +176,44 @@ export function registerConsentRoutes(app: FastifyInstance): void {
       const subject = await prisma().subject.findUnique({
         where: { id: parsed.data.subjectId },
       });
-      if (!subject || subject.projectId !== user.projectId) {
+      if (!subject) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
           "Subject not found",
           { requestId: req.id },
         );
       }
+      // R2: enforce via caller's role assignment list.
+      assertProjectAccess(user, subject.projectId, req.id);
       const doc = await prisma().consentDocument.findUnique({
         where: { id: parsed.data.consentDocumentId },
       });
-      if (!doc || doc.projectId !== user.projectId) {
+      if (!doc) {
         throw new ApiErrorException(
           ApiErrorCode.NOT_FOUND,
           "Consent document not found",
           { requestId: req.id },
         );
       }
+      // R2: document must belong to a project the caller can reach.
+      assertProjectAccess(user, doc.projectId, req.id);
+      // Subject + document must live in the same project; otherwise
+      // refuse to forge a cross-project consent task.
+      if (subject.projectId !== doc.projectId) {
+        throw new ApiErrorException(
+          ApiErrorCode.VALIDATION_ERROR,
+          "Subject and consent document must belong to the same project",
+          { requestId: req.id, details: { subjectProject: subject.projectId, documentProject: doc.projectId } },
+        );
+      }
+      // R1: permission evaluated against the actor's role on the target
+      // project (the subject's project).
+      const createActor = resolveActorRoleForProject(user, subject.projectId, req.id);
+      authorize(
+        { userId: createActor.userId, role: createActor.role },
+        Permission.ConsentRead,
+        { requestId: req.id },
+      );
       const task = await prisma().consentTask.create({
         data: {
           subjectId: parsed.data.subjectId,
@@ -207,7 +234,7 @@ export function registerConsentRoutes(app: FastifyInstance): void {
     "/api/consent/:taskId/start",
     async (req) => {
       const user = await requireUser(req);
-      const task = await loadTaskScoped(user, req.params.taskId);
+      const task = await loadTaskScoped(user, req.params.taskId, req.id);
       assertConsentTransition(task.status, ConsentStatus.Reading);
       const updated = await prisma().consentTask.update({
         where: { id: task.id },
@@ -234,7 +261,7 @@ export function registerConsentRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const task = await loadTaskScoped(user, req.params.taskId);
+    const task = await loadTaskScoped(user, req.params.taskId, req.id);
     assertConsentTransition(task.status, ConsentStatus.ComprehensionPending);
     const percent = parsed.data.score / parsed.data.totalQuestions;
     if (percent < 0.6) {
@@ -288,7 +315,7 @@ export function registerConsentRoutes(app: FastifyInstance): void {
         { requestId: req.id },
       );
     }
-    const task = await loadTaskScoped(user, req.params.taskId);
+    const task = await loadTaskScoped(user, req.params.taskId, req.id);
     // Decide the next lifecycle status based on the role signature we
     // are about to add. Order: Subject → Investigator → Completed.
     const existingRoles = new Set(task.signatures.map((s) => s.signerRole));
@@ -344,7 +371,7 @@ export function registerConsentRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const task = await loadTaskScoped(user, req.params.taskId);
+    const task = await loadTaskScoped(user, req.params.taskId, req.id);
     assertConsentTransition(task.status, ConsentStatus.Withdrawn);
     const updated = await prisma().consentTask.update({
       where: { id: task.id },
@@ -360,6 +387,7 @@ export function registerConsentRoutes(app: FastifyInstance): void {
 async function loadTaskScoped(
   user: AuthenticatedUser,
   taskId: string,
+  requestId: string,
 ) {
   const task = await prisma().consentTask.findUnique({
     where: { id: taskId },
@@ -373,15 +401,10 @@ async function loadTaskScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Consent task not found",
-      { details: { taskId } },
+      { requestId, details: { taskId } },
     );
   }
-  if (task.subject.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Consent task belongs to a different project",
-      { details: { taskId } },
-    );
-  }
+  // R2: enforce via caller's full role assignment list.
+  assertProjectAccess(user, task.subject.projectId, requestId);
   return task;
 }

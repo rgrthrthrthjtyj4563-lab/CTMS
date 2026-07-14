@@ -11,6 +11,7 @@
 import type { FastifyInstance } from "fastify";
 import { ApiErrorCode, ApiErrorException } from "@aic-dct/domain";
 import { prisma } from "../db.js";
+import { assertProjectAccess, requireUser } from "../lib/auth.js";
 
 interface SubjectStatusCounts {
   total: number;
@@ -41,6 +42,11 @@ function monthBucket(date: Date): string {
 }
 
 async function requireProject(req: import("fastify").FastifyRequest, projectId: string) {
+  // R2: load the authenticated user and verify they hold an assignment
+  // on the requested project. Without this, the dashboard is wide open
+  // to cross-project reads.
+  const user = await requireUser(req);
+  assertProjectAccess(user, projectId, req.id);
   const project = await prisma().project.findUnique({ where: { id: projectId } });
   if (!project) {
     throw new ApiErrorException(

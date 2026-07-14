@@ -31,9 +31,11 @@ import {
   ApiErrorCode,
   ApiErrorException,
   AuditAction,
+  HumanConfirmationStatus,
   Permission,
   ReportStatus,
   authorize,
+  canPromoteAIOutput,
   canTransition,
   REPORT_STATUS_TRANSITIONS,
   type ReportStatus as ReportStatusT,
@@ -45,7 +47,14 @@ import type {
   ReportDraft,
 } from "@prisma/client";
 import { prisma } from "../db.js";
-import { audit, requireUser } from "../lib/auth.js";
+import {
+  assertProjectAccess,
+  audit,
+  requireUser,
+  resolveActorRoleForProject,
+  resolveProjectScope,
+  type AuthenticatedUser,
+} from "../lib/auth.js";
 
 const REPORT_TYPES = ["Interim", "Final", "Safety", "Custom"] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
@@ -63,6 +72,7 @@ const listQuerySchema = z.object({
 
 const generateSchema = z.object({
   type: z.enum(REPORT_TYPES).default("Interim"),
+  projectId: z.string().optional(),
   /** Optional human hint; surfaced on the AI output's payload summary. */
   notes: z.string().max(2000).optional(),
 });
@@ -86,8 +96,9 @@ function assertReportTransition(
 }
 
 async function loadReportScoped(
-  user: { projectId: string },
+  user: AuthenticatedUser,
   reportId: string,
+  requestId: string,
 ) {
   const report = await prisma().reportDraft.findUnique({
     where: { id: reportId },
@@ -96,16 +107,12 @@ async function loadReportScoped(
     throw new ApiErrorException(
       ApiErrorCode.NOT_FOUND,
       "Report not found",
-      { details: { reportId } },
+      { requestId, details: { reportId } },
     );
   }
-  if (report.projectId !== user.projectId) {
-    throw new ApiErrorException(
-      ApiErrorCode.FORBIDDEN,
-      "Report belongs to a different project",
-      { details: { reportId } },
-    );
-  }
+  // R2: enforce via caller's full role assignment list (not the
+  // single primary project).
+  assertProjectAccess(user, report.projectId, requestId);
   return report;
 }
 
@@ -125,8 +132,9 @@ export function registerReportRoutes(app: FastifyInstance): void {
         );
       }
       const { projectId, status, type, page, pageSize } = parsed.data;
+      const scopeProjectId = resolveProjectScope(user, projectId, req.id);
       const where = {
-        projectId: projectId ?? user.projectId,
+        projectId: scopeProjectId,
         ...(status ? { status } : {}),
         ...(type ? { type } : {}),
       };
@@ -163,7 +171,7 @@ export function registerReportRoutes(app: FastifyInstance): void {
     async (req) => {
       const user = await requireUser(req);
       authorize(user, Permission.ReportRead, { requestId: req.id });
-      const report = await loadReportScoped(user, req.params.reportId);
+      const report = await loadReportScoped(user, req.params.reportId, req.id);
       // Pull the linked AIOutput (the snapshot used to draft the report)
       // and the audit chain. We keep these two independent so a missing
       // AIOutput (e.g. Failed report) doesn't break the detail view.
@@ -223,6 +231,16 @@ export function registerReportRoutes(app: FastifyInstance): void {
           { requestId: req.id, details: { issues: parsed.error.issues } },
         );
       }
+      // R2: target project must be one the caller is assigned to. R1:
+      // generate permission evaluated against the actor's role on that
+      // project (NOT the primary project's role).
+      const targetProjectId = resolveProjectScope(user, parsed.data.projectId, req.id);
+      const generateActor = resolveActorRoleForProject(user, targetProjectId, req.id);
+      authorize(
+        { userId: generateActor.userId, role: generateActor.role },
+        Permission.ReportGenerate,
+        { requestId: req.id },
+      );
       // Create the row in Generating; the worker flips it to Draft
       // asynchronously. We intentionally do NOT use audit-before-mutate
       // here: there is no state transition to guard — the row simply
@@ -230,7 +248,7 @@ export function registerReportRoutes(app: FastifyInstance): void {
       // event for the create is written.
       const created = await prisma().reportDraft.create({
         data: {
-          projectId: user.projectId,
+          projectId: targetProjectId,
           type: parsed.data.type,
           status: ReportStatus.Generating,
         },
@@ -262,8 +280,45 @@ export function registerReportRoutes(app: FastifyInstance): void {
     "/api/reports/:reportId/confirm",
     async (req) => {
       const user = await requireUser(req);
-      authorize(user, Permission.ReportConfirm, { requestId: req.id });
-      const report = await loadReportScoped(user, req.params.reportId);
+      const report = await loadReportScoped(user, req.params.reportId, req.id);
+      const confirmActor = resolveActorRoleForProject(user, report.projectId, req.id);
+      authorize(
+        { userId: confirmActor.userId, role: confirmActor.role },
+        Permission.ReportConfirm,
+        { requestId: req.id },
+      );
+      // ── Phase 3 / Task 3.7 AI gate ──────────────────────────
+      // If the report is linked to an AIOutput (sourceSnapshotId), the AI
+      // output MUST be promotable (Adopted or EditedAdopted). Refuse with
+      // AI_CONFIRMATION_REQUIRED otherwise. Reports without a snapshot
+      // (e.g. pure manual) bypass the gate.
+      if (report.sourceSnapshotId) {
+        const aiOutput = await prisma().aIOutput.findUnique({
+          where: { id: report.sourceSnapshotId },
+        });
+        if (!aiOutput) {
+          throw new ApiErrorException(
+            ApiErrorCode.NOT_FOUND,
+            "Linked AI output not found",
+            { requestId: req.id, details: { sourceSnapshotId: report.sourceSnapshotId } },
+          );
+        }
+        // R2: linked AI output must belong to a project the caller can reach.
+        assertProjectAccess(user, aiOutput.projectId, req.id);
+        if (
+          aiOutput.status !== HumanConfirmationStatus.Adopted &&
+          aiOutput.status !== HumanConfirmationStatus.EditedAdopted &&
+          !canPromoteAIOutput(
+            aiOutput as unknown as Parameters<typeof canPromoteAIOutput>[0],
+          )
+        ) {
+          throw new ApiErrorException(
+            ApiErrorCode.AI_CONFIRMATION_REQUIRED,
+            "Report is linked to an AI output that has not been adopted",
+            { requestId: req.id, details: { sourceSnapshotId: report.sourceSnapshotId, aiOutputStatus: aiOutput.status } },
+          );
+        }
+      }
       // Two consecutive legal transitions. The intermediate UnderReview
       // state is recorded in the audit chain but does not require a
       // separate user action — the report goes from "AI 草稿" to "人工
@@ -318,7 +373,13 @@ export function registerReportRoutes(app: FastifyInstance): void {
     Body: z.infer<typeof exportSchema>;
   }>("/api/reports/:reportId/export", async (req) => {
     const user = await requireUser(req);
-    authorize(user, Permission.ReportExport, { requestId: req.id });
+    const report = await loadReportScoped(user, req.params.reportId, req.id);
+    const exportActor = resolveActorRoleForProject(user, report.projectId, req.id);
+    authorize(
+      { userId: exportActor.userId, role: exportActor.role },
+      Permission.ReportExport,
+      { requestId: req.id },
+    );
     const parsed = exportSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ApiErrorException(
@@ -327,7 +388,6 @@ export function registerReportRoutes(app: FastifyInstance): void {
         { requestId: req.id, details: { issues: parsed.error.issues } },
       );
     }
-    const report = await loadReportScoped(user, req.params.reportId);
     assertReportTransition(report.status, ReportStatus.Exported);
     const now = new Date();
     // audit-before-mutate: write the ExportRecord + the critical ReportExport
