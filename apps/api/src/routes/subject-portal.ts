@@ -147,7 +147,7 @@ async function loadOwnSymptomReport(
 
 export function registerSubjectPortalRoutes(app: FastifyInstance): void {
   app.get("/api/subject/me", async (req) => {
-    const { identity } = await requireSubjectActor(req, Permission.SubjectReadMasked);
+    const { user, identity } = await requireSubjectActor(req, Permission.SubjectReadMasked);
     const [subject, project] = await Promise.all([
       prisma().subject.findUnique({
         where: { id: identity.subjectId },
