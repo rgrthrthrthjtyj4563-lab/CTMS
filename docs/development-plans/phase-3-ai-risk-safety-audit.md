@@ -4,6 +4,8 @@
 
 Implement the differentiated intelligence layer: AI protocol parsing, safety-event workflow, AI risk monitoring, reports, documents, audit, and AI platform configuration.
 
+> Historical scope note: Tasks 3.1-3.6 describe the original implementation scope. Phase 3 final acceptance also requires Task 3.7 below and the M3 exit criteria in the architecture roadmap.
+
 ## Scope
 
 This phase implements:
@@ -159,6 +161,26 @@ Acceptance:
 - AI call logs include time, module, caller, project, input summary, output summary, model name, prompt version, human confirmation state, and action.
 - Prompt template changes create versioned records and audit events.
 
+### Task 3.7 - Compliance, Promotion, And Project-Isolation Closure
+
+Deliver:
+
+- Move target-project role resolution into the shared authorization layer.
+- Apply `resolveProjectScope` to every Phase 0-3 list, aggregate, and export endpoint that accepts or derives project scope.
+- Load the target object's `projectId` and enforce project access on every detail and mutation endpoint.
+- Evaluate permissions against the actor's assignment in the target project, not a primary/default role from another project.
+- Require `canPromoteAIOutput` at every AI-to-formal-record boundary, including AI-derived protocol activation and report confirmation.
+- Provide a normal Parsed -> UnderReview -> Effective HTTP path for protocol versions.
+- Align PII reveal behavior, RBAC code, domain tests, this matrix, and OpenAPI descriptions.
+
+Acceptance:
+
+- Unassigned `?projectId=` access returns `403`; foreign object IDs cannot be read or mutated.
+- A high-privilege role in project A grants no authority in project B unless the actor has that role assignment in B.
+- `Pending`, `Rejected`, and `NeedsInvestigatorConfirmation` AI outputs cannot be promoted; `Adopted` and `EditedAdopted` can be promoted when project, kind, target, and version match.
+- Human-authored protocol/report paths do not create a fake AI output and are explicitly distinguished from AI-derived paths.
+- Negative authorization and promotion tests cover subjects, consent, visits, ePRO, safety, risks, protocol, reports, documents, audit, and AI configuration.
+
 ## Tests And Verification
 
 Required commands:
@@ -169,12 +191,15 @@ Required commands:
 - Worker job tests with deterministic mock AI provider.
 - E2E smoke: protocol parse -> effective version -> risk generation -> risk handling -> report draft -> export.
 - Permission tests for PI-only SAE judgment and audit read-only role.
+- Cross-project list/detail/mutation tests and target-project role tests.
+- AI promotion tests at protocol activation and report confirmation, not only at adopt/reject endpoints.
 
 ## Architect Review Gate
 
 Reject Phase 3 if:
 
 - AI output can bypass human confirmation.
+- Any Phase 0-3 route trusts an unverified `projectId`, exposes a foreign-project object, or evaluates authority using the wrong project's role.
 - Protocol activation mutates previous effective versions.
 - SAE closure lacks reason, authority, or audit.
 - Report export lacks confirmation and export log.

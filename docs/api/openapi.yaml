@@ -3,9 +3,28 @@ info:
   title: AIC-DCT API
   version: 0.1.0
   description: |
-    AIC-DCT backend API contract (Phase 0). Every endpoint is registered but
-    returns a typed 501 with the canonical error envelope until later
-    phases fill in the handlers.
+    AIC-DCT backend API contract. Some Phase 4A Subject endpoints are still
+    planned and MUST be added here in the same change that implements them;
+    this document must not claim that a planned route is already available.
+
+    Authorization is permission plus scope. List, aggregate, and export
+    endpoints resolve an authorized project scope; detail and mutation
+    endpoints verify the target object's project and evaluate the actor's
+    role in that target project. Subject endpoints additionally derive the
+    bound subject/project from authenticated identity and never trust a
+    client-supplied subjectId or projectId to widen access.
+
+    AI adopt/reject endpoints do not by themselves make an AI workflow
+    compliant. Any endpoint that promotes AI-derived content into a formal
+    record, including AI-derived protocol activation and report confirmation,
+    must accept only Adopted or EditedAdopted output and must verify project,
+    output kind, target object, and version. Purely human-authored records use
+    an explicit non-AI path.
+
+    Subject-originated source data cannot be silently overwritten by Web
+    users. Approved assisted entry is a distinct, attributed, reasoned,
+    persistently labelled, audited record and is never represented as Subject
+    self-entry.
 
     Every error response conforms to:
     ```
@@ -244,7 +263,6 @@ components:
         currentVersionId: { type: string, nullable: true }
         uploadedByUserId: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
 
     DocumentListResponse:
       type: object
@@ -319,6 +337,158 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/AuditExportRecord' }
+
+    # ── AI 中台配置 (Task 3.6) ──────────────────────────────────
+    AIConfig:
+      type: object
+      properties:
+        id: { type: string }
+        projectId: { type: string, nullable: true }
+        provider: { type: string }
+        model: { type: string }
+        temperature: { type: number, format: float }
+        maxTokens: { type: integer, nullable: true }
+        enabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AIConfigUpdateRequest:
+      type: object
+      properties:
+        provider: { type: string, minLength: 1, maxLength: 80 }
+        model: { type: string, minLength: 1, maxLength: 120 }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        maxTokens: { type: integer, minimum: 1, maximum: 100000, nullable: true }
+        enabled: { type: boolean }
+
+    AIConfigListResponse:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AIConfig' }
+
+    PromptTemplate:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        version: { type: string }
+        body: { type: string }
+        variables:
+          type: array
+          items: { type: string }
+        outputKind: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    PromptTemplateCreateRequest:
+      type: object
+      required: [code, body, outputKind]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 80 }
+        body: { type: string, minLength: 1, maxLength: 20000 }
+        variables:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 80 }
+          default: []
+        outputKind: { type: string, minLength: 1, maxLength: 80 }
+        version: { type: string, minLength: 1, maxLength: 40 }
+
+    PromptTemplateListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PromptTemplate' }
+
+    AIOutputSummary:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        projectId: { type: string }
+        subjectId: { type: string, nullable: true }
+        confidence: { type: number, format: float, nullable: true }
+        confidenceLevel: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/HumanConfirmationStatus' }
+        model: { type: string }
+        modelVersion: { type: string, nullable: true }
+        inputHash: { type: string }
+        promptTemplateCode: { type: string, nullable: true }
+        promptVersion: { type: string, nullable: true }
+        payload:
+          type: object
+          additionalProperties: true
+        generatedAt: { type: string, format: date-time }
+        confirmedByUserId: { type: string, nullable: true }
+        confirmedByName: { type: string, nullable: true }
+        confirmedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+        rejectionReason: { type: string, nullable: true }
+
+    AIOutputListResponse:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AIOutputSummary' }
+
+    AIOutputAdoptRequest:
+      type: object
+      properties:
+        notes: { type: string, maxLength: 2000 }
+
+    AIOutputAdoptResponse:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: '#/components/schemas/HumanConfirmationStatus' }
+        confirmedByUserId: { type: string }
+        confirmedAt: { type: string, format: date-time, nullable: true }
+
+    AIOutputRejectResponse:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: '#/components/schemas/HumanConfirmationStatus' }
+        confirmedByUserId: { type: string }
+        confirmedAt: { type: string, format: date-time, nullable: true }
+        rejectionReason: { type: string, nullable: true }
+
+    AICallLogItem:
+      type: object
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        module: { type: string }
+        caller: { type: string }
+        inputHash: { type: string }
+        model: { type: string }
+        promptTemplateCode: { type: string, nullable: true }
+        promptVersion: { type: string, nullable: true }
+        aiOutputId: { type: string, nullable: true }
+        aiOutputKind: { type: string, nullable: true }
+        aiOutputStatus: { $ref: '#/components/schemas/HumanConfirmationStatus', nullable: true }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        statusCode: { type: integer, nullable: true }
+        errorMessage: { type: string, nullable: true }
+
+    AICallLogListResponse:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AICallLogItem' }
 
 security:
   - bearerAuth: []
@@ -1222,8 +1392,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
-        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
-        '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
   /api/documents/{documentId}:
     parameters:
@@ -1276,79 +1444,147 @@ paths:
         '409': { description: Version label already exists, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
         '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/configs:
+  /api/ai-config/configs:
     get:
-      summary: List AI configs
+      summary: List AI configs (project-scoped via resolveProjectScope)
+      description: |
+        R2 closure. Returns both project-scoped and global (projectId=null)
+        configs. When `?projectId=` is supplied the caller must hold an
+        assignment on that project; otherwise 403. Permission: `ai:config.read`.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: projectId, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AIConfigListResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/configs/{configId}:
+  /api/ai-config/configs/{configId}:
     parameters:
       - { name: configId, in: path, required: true, schema: { type: string } }
     put:
-      summary: Update AI config (SystemAdmin)
+      summary: Update AI config (project-scoped via resolveActorRoleForProject)
+      description: |
+        R1 + R2 closure. The config's `projectId` is used to resolve the
+        caller's role assignment; a Sponsor on project A cannot update a
+        config on project B using their project-A role. Global configs
+        (projectId=null) require `ai:config.update` and are effectively
+        SystemAdmin-only (matrix gates the permission).
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIConfigUpdateRequest' }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AIConfig' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '404': { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/prompt-templates:
+  /api/ai-config/prompts:
     get:
-      summary: List prompt templates
+      summary: List prompt templates (global, platform-level)
       security: [{ bearerAuth: [] }]
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/PromptTemplateListResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
     post:
-      summary: Create prompt template
+      summary: Create new prompt template version
+      description: |
+        Always creates a NEW row; existing versions are immutable. The
+        new version's label is auto-incremented from the previous one
+        unless the caller supplies an unused `version` (which must be
+        unique per `code`). Permission: `ai:config.update`.
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromptTemplateCreateRequest' }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '201':
+          description: Created
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/PromptTemplate' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '409': { description: Version label already exists, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/outputs:
+  /api/ai-config/outputs:
     get:
-      summary: List AI outputs
+      summary: List AI outputs (project-scoped review queue)
+      description: |
+        R2 closure. Defaults `status=Pending`; ?projectId= is honored only
+        when the caller has an assignment on it. Permission: `ai:output.read`.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: projectId, in: query, schema: { type: string } }
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/HumanConfirmationStatus' } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AIOutputListResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/outputs/{outputId}/adopt:
+  /api/ai-config/outputs/{outputId}/adopt:
     parameters:
       - { name: outputId, in: path, required: true, schema: { type: string } }
     post:
-      summary: Adopt AI output (audited, confirmation required)
+      summary: Adopt AI output (Pending → Adopted, atomic with audit)
+      description: |
+        R1 closure. The output's `projectId` resolves the actor's role;
+        the permission `ai:output.adopt` is evaluated against that role
+        only. State change is wrapped with the audit event in a single
+        transaction.
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIOutputAdoptRequest' }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AIOutputAdoptResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '404': { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '409': { description: Illegal lifecycle transition, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/outputs/{outputId}/reject:
+  /api/ai-config/outputs/{outputId}/reject:
     parameters:
       - { name: outputId, in: path, required: true, schema: { type: string } }
     post:
-      summary: Reject AI output (audited, reason required)
+      summary: Reject AI output (Pending → Rejected, reason required)
+      description: |
+        Same R1 closure as adopt. `reason` is mandatory and is enforced by
+        `CRITICAL_AUDIT_PAIRS` (requiresReason: true on AIOutputRejected).
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1358,24 +1594,39 @@ paths:
               type: object
               required: [reason]
               properties:
-                reason: { type: string }
+                reason: { type: string, minLength: 1, maxLength: 2000 }
+                notes:  { type: string, maxLength: 2000 }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AIOutputRejectResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '404': { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '409': { description: Illegal lifecycle transition, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '422': { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
-  /api/ai/call-logs:
+  /api/ai-config/call-logs:
     get:
-      summary: List AI call logs
+      summary: List AI call logs (project-scoped via linked AIOutput.projectId)
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: projectId, in: query, schema: { type: string } }
+        - { name: model, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
       responses:
-        '501':
-          description: Not implemented in Phase 0
+        '200':
+          description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApiError' }
+              schema: { $ref: '#/components/schemas/AICallLogListResponse' }
+        '401': { description: Unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '403': { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
 
   /api/audit/events:
     get:

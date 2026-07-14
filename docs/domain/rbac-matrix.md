@@ -58,7 +58,7 @@ Legend:
 | document:upload | ✅ | ✅ | ✅ |  |  |  |  |  |  |  | ✅ |
 | document:version | ✅ | ✅ | ✅ |  |  |  |  |  |  |  | ✅ |
 | ai:config.read | ✅ | ✅ |  |  |  | ✅ |  |  |  |  | ✅ |
-| ai:config.update |  |  |  |  |  |  |  |  |  |  | ✅ |
+| ai:config.update | ✅ | ✅ |  |  |  |  |  |  |  |  | ✅ |
 | ai:output.read | ✅ | ✅ | ✅ | ✅ |  | ✅ | ✅ |  |  |  | ✅ |
 | ai:output.adopt | ✅ | ✅ | ✅ |  |  |  |  |  |  |  | ✅ |
 | ai:output.reject | ✅ | ✅ | ✅ |  |  |  |  |  |  |  | ✅ |
@@ -74,6 +74,18 @@ Legend:
 Every API route that performs a write MUST call `assertCanMutate(role)` and
 reject the request with `403 FORBIDDEN` when the role is read-only. This is
 enforced by the unit tests in `packages/domain/src/rbac.test.ts`.
+
+## Project And Self-Scope Invariants
+
+Permission names do not grant global scope:
+
+- List, aggregate, and export routes MUST resolve an authorized project scope.
+- Detail and mutation routes MUST verify the project that owns the target object.
+- Permission evaluation MUST use the actor's role assignment in that target project; authority from project A does not carry into project B.
+- `Subject` permissions are additionally self-scoped to the subject record bound to the authenticated identity. A Subject route MUST NOT trust a client-supplied `subjectId` or `projectId` to widen scope.
+- Provider permissions are additionally assignment-scoped to tasks assigned to that Provider identity.
+
+`questionnaire:submit` for Site CRC describes an approved staff workflow; it MUST NOT be represented as Subject self-entry. When assisted entry is implemented, its distinct permission and audit contract MUST be added to `packages/domain/src/rbac.ts`, domain tests, this matrix, and OpenAPI in the same change. `consent:sign` does not allow a Site CRC to create a Subject's personal signature; signer identity and consent-state transitions remain server-enforced.
 
 ## Sensitive PII Access
 

@@ -120,6 +120,43 @@ export function assertProjectAccess(
   }
 }
 
+/**
+ * Resolve the caller's role for a specific target project. R1 closure
+ * (Phase 3 Task 3.6 / 3.7): mutating endpoints that target a row in
+ * a specific project must evaluate `authorize()` against the actor's
+ * role assignment on that project, not the primary/roleAssignment[0]
+ * role. Returns `{ userId, projectId, role }` so the caller can pass
+ * it straight to `authorize()`. Throws 403 when the caller has no
+ * assignment on the target project.
+ *
+ * Intentionally narrow: this helper does NOT check permissions; the
+ * caller always calls `authorize(actor, permission)` after this.
+ */
+export function resolveActorRoleForProject(
+  user: AuthenticatedUser,
+  targetProjectId: string,
+  requestId: string,
+): { userId: string; projectId: string; role: Role } {
+  if (targetProjectId === user.projectId) {
+    return { userId: user.userId, projectId: user.projectId, role: user.role };
+  }
+  const match = user.roleAssignments.find(
+    (a) => a.projectId === targetProjectId,
+  );
+  if (!match) {
+    throw new ApiErrorException(
+      ApiErrorCode.FORBIDDEN,
+      "Caller is not assigned to the target project",
+      { requestId, details: { targetProjectId } },
+    );
+  }
+  return {
+    userId: user.userId,
+    projectId: targetProjectId,
+    role: match.role,
+  };
+}
+
 function readHeader(req: FastifyRequest, name: string): string | null {
   const v = req.headers[name];
   if (typeof v === "string" && v.length > 0) return v;

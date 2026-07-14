@@ -50,7 +50,7 @@ describe("API server", () => {
       "/api/samples/transfers",
       "/api/reports",
       "/api/documents",
-      "/api/ai/configs",
+      "/api/ai-config/configs",
       "/api/audit/events",
       // /api/safety/events is now fully implemented in Phase 3.
       // It is verified by its own route file instead of via skeleton contract.

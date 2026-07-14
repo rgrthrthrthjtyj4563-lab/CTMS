@@ -67,11 +67,12 @@ npm run db:seed
 
 ## Phase 3 总览
 
-Phase 3 实现智能化层：AI 方案解析、安全事件（AE/SAE）工作流、AI 风险监查、报告中心、文档与审计、AI 中台配置。
+Phase 3 实现智能化层：AI 方案解析、安全事件（AE/SAE）工作流、AI 风险监查、报告中心、文档与审计、AI 中台配置，并通过 Task 3.7 完成合规与项目隔离收口。
 
 **拆为两轮执行**：
 - **Round 1（Task 3.1-3.3）**：安全事件 + 风险监查 + 方案解析
 - **Round 2（Task 3.4-3.6）**：报告中心 + 文档审计 + AI 配置
+- **Closure（Task 3.7）**：AI 晋升硬门槛 + 全 API 项目隔离 + 目标项目角色解析
 
 每轮完成后输出交付报告，等架构师审核通过再进入下一轮。
 
@@ -366,6 +367,35 @@ Mock 实现返回确定性 JSON（基于 input hash 选预定义响应），不�
 路由：
 - `App.tsx`：`/app/ai-config` → `<AIConfigRoute />`
 - `SideNav.tsx`：移除 `ai-config` 的 `phase: "Phase 3"` 标记
+
+### Task 3.7 — Phase 3 合规与项目隔离收口
+
+本任务是 Phase 3 的退出门槛，不是可选优化。3.1-3.6 的历史实现说明保持不变，但最终验收以本任务为准。
+
+**公共鉴权：**
+
+- 将按目标项目解析角色的逻辑放入 `apps/api/src/lib/auth.ts`，供所有业务路由复用。
+- 列表、统计、导出使用 `resolveProjectScope(user, queryProjectId, requestId)`。
+- 详情和写操作从目标对象反查 `projectId`，再执行 `assertProjectAccess`。
+- 权限必须使用用户在目标项目中的角色；不得沿用其他项目的默认/主角色。
+
+**全路由覆盖：**
+
+审查并修复 subjects、consent、visits、epro、safety、risks、protocol、reports、documents、audit、ai-config。每个模块至少覆盖未授权项目查询、外项目对象读取、外项目对象写入和多项目角色不泄漏测试。
+
+**AI 晋升：**
+
+- 方案激活、报告确认以及其他 AI 草稿正式化入口必须服务端调用 `canPromoteAIOutput()`。
+- 仅 `Adopted` / `EditedAdopted` 可晋升；Pending、Rejected、NeedsInvestigatorConfirmation 均拒绝。
+- 同时校验 AIOutput 的 project、kind、目标对象和版本。
+- 纯人工创建的对象走明确的非 AI 路径，不伪造 AIOutput。
+
+**完成标准：**
+
+- Task 3.6 形成干净可评审提交，RBAC、测试和 OpenAPI 一致。
+- Parsed → UnderReview → Effective 存在正常 HTTP 路径。
+- PII 解敏权限、reason 和审计事件一致。
+- `npm run typecheck`、`npm run lint`、`npm run test` 全部通过，并完成中心运营闭环冒烟。
 
 ---
 

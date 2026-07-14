@@ -92,6 +92,19 @@ describe("RBAC role permissions", () => {
     expect(roleHasPermission(Role.Auditor, Permission.DocumentRead)).toBe(true);
     expect(roleHasPermission(Role.RegulatorReadOnly, Permission.DocumentRead)).toBe(true);
   });
+
+  // P0 contract sync (Task 3.6): AIConfigUpdate is granted to Sponsor / CRO /
+  // System only; site staff and auditors must NOT update AI configs.
+  it("AIConfigUpdate is granted to Sponsor/CROPM/SystemAdmin only", () => {
+    expect(roleHasPermission(Role.SponsorAdmin, Permission.AIConfigUpdate)).toBe(true);
+    expect(roleHasPermission(Role.CROPM, Permission.AIConfigUpdate)).toBe(true);
+    expect(roleHasPermission(Role.SystemAdmin, Permission.AIConfigUpdate)).toBe(true);
+    expect(roleHasPermission(Role.SitePI, Permission.AIConfigUpdate)).toBe(false);
+    expect(roleHasPermission(Role.SiteCRC, Permission.AIConfigUpdate)).toBe(false);
+    expect(roleHasPermission(Role.CRA, Permission.AIConfigUpdate)).toBe(false);
+    expect(roleHasPermission(Role.Auditor, Permission.AIConfigUpdate)).toBe(false);
+    expect(roleHasPermission(Role.RegulatorReadOnly, Permission.AIConfigUpdate)).toBe(false);
+  });
 });
 
 describe("authorize", () => {

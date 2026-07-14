@@ -4,6 +4,20 @@
 
 Complete the multi-party DCT operating loop by adding subject mobile flows, provider task views, drug/sample management, and read-only audit/regulator access.
 
+## Delivery Order
+
+Phase 4 is a program, not one indivisible implementation batch:
+
+1. **Phase 4A - Minimum Subject source-data loop** is the next executable slice.
+2. **Phase 4B - Complete Subject experience** follows after 4A acceptance.
+3. **Phase 4C - Provider and supply operations** follows after the Subject boundary is stable.
+
+Do not begin Subject write APIs until Phase 3 Task 3.7 has stabilized the shared project/role guards. Low-coupling mobile shell and interaction preparation may overlap.
+
+### Source-Data Rule
+
+Subject-reported source data is created by an authenticated Subject identity bound to one subject record. Web may monitor, query, confirm, and handle it, but cannot silently create, alter, or overwrite the original response. Approved assisted entry is stored as a distinct, permanently labelled and audited record; it is not Subject self-entry. Ordinary CRC assistance cannot create a Subject consent signature.
+
 ## Scope
 
 This phase implements:
@@ -36,6 +50,27 @@ For the Web back-office drug/sample page, use `Web后台UI设计/src/app/App.tsx
 - `apps/web/tests/mobile-provider-compliance.spec.ts`
 
 ## Implementation Tasks For AI Worker
+
+### Phase 4A - Minimum Subject Source-Data Loop
+
+Deliver first:
+
+- Subject authentication context with exactly one bound subject and project; mobile APIs derive scope from identity instead of trusting client-supplied `subjectId` or `projectId`.
+- Today's tasks page.
+- ePRO draft and submit flow.
+- Symptom report with urgent-care guidance.
+- Severe symptom creates a safety-review task or risk signal visible in Web.
+- Web monitoring/handling that cannot overwrite the original Subject response.
+- End-to-end audit replay.
+
+Acceptance:
+
+- Subject A cannot list, read, draft, submit, or infer Subject B's tasks or records.
+- At least one ePRO and one symptom report preserve origin, identity, instrument/version, timestamps, and audit metadata.
+- Draft and submitted states are distinct; submitted source data is immutable except through an attributed correction.
+- The repeatable smoke path is Web task assignment -> Subject submission -> system trigger -> Web handling -> audit replay.
+
+The following original tasks are retained as the Phase 4 program backlog. Task 4.2 and the ePRO/symptom subset of Task 4.4 are delivered by 4A; consent, medication, remote visit, Provider, drug/sample, and dedicated read-only surfaces belong to 4B/4C unless a later decision changes the order.
 
 ### Task 4.1 - Drug And Sample Management
 
@@ -139,7 +174,10 @@ Required commands:
 - `npm run lint`
 - `npm run typecheck`
 - `npm run test`
-- Mobile smoke test: login as subject -> view tasks -> complete medication check-in -> complete ePRO -> submit symptom report.
+- Phase 4A smoke test: Web assigns task -> Subject views own tasks -> saves and submits ePRO -> submits severe symptom -> Web handles generated safety/risk item -> auditor replays the trail.
+- Subject isolation tests: forged project/subject/object identifiers never widen access.
+- Assisted-entry tests, when that exception is implemented: source, recorder, reason, channel, timestamps, correction history, and persistent labelling are mandatory.
+- Phase 4B mobile smoke test: login as subject -> complete medication check-in -> complete ePRO -> submit symptom report.
 - Provider smoke test: provider accepts task -> completes task -> reports exception.
 - Read-only smoke test: auditor views document and audit log -> mutation is denied.
 
@@ -148,6 +186,8 @@ Required commands:
 Reject Phase 4 if:
 
 - Subject mobile shows Web-back-office complexity or pressure-heavy wording.
+- A Subject route trusts client-supplied project/subject scope or exposes another Subject's data.
+- Web can silently overwrite Subject-originated source data or assisted entry is represented as Subject self-entry.
 - Severe symptom reporting lacks emergency medical guidance.
 - Provider users can see unrelated tasks.
 - Drug/sample exceptions do not connect to risk monitoring.

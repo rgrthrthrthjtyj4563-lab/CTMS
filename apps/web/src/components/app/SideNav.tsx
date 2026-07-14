@@ -40,7 +40,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { id: "reports", label: "报告中心", path: "/app/reports", icon: BarChart2, aiFlag: true },
   { id: "documents", label: "文档与稽查", path: "/app/documents", icon: FolderOpen },
   { id: "documents-audit", label: "审计日志", path: "/app/documents-audit", icon: Shield, aiFlag: true },
-  { id: "ai-config", label: "AI 中台配置", path: "/app/ai-config", icon: Cpu, aiFlag: true, phase: "Phase 3" },
+  { id: "ai-config", label: "AI 中台配置", path: "/app/ai-config", icon: Cpu, aiFlag: true },
   { id: "settings", label: "系统设置", path: "/app/settings", icon: Settings, phase: "Phase 4" },
 ];
 

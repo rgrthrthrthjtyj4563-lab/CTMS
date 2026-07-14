@@ -16,6 +16,7 @@ import { ProtocolPage } from "./routes/ProtocolPage.js";
 import { ReportsPage } from "./routes/ReportsPage.js";
 import { DocumentsPage } from "./routes/DocumentsPage.js";
 import { DocumentsAuditPage } from "./routes/DocumentsAuditPage.js";
+import { AIConfigPage } from "./routes/AIConfigPage.js";
 import { AppShell } from "./components/app/AppShell.js";
 import { Toaster } from "./components/ui/Toast.js";
 import { loadSession, type Session } from "./lib/session.js";
@@ -66,8 +67,7 @@ const ROUTE_PHASE: Record<string, { title: string; phase?: "Phase 2" | "Phase 3"
   },
   "/app/ai-config": {
     title: "AI 中台配置",
-    phase: "Phase 3",
-    description: "模型选择、置信度阈值、人工确认策略。",
+    description: "能力开关、Prompt 版本、输出审核、调用日志。",
   },
   "/app/settings": {
     title: "系统设置",
@@ -203,6 +203,14 @@ function DocumentsAuditRoute() {
   );
 }
 
+function AIConfigRoute() {
+  return (
+    <RequireAuth>
+      <AIConfigPage />
+    </RequireAuth>
+  );
+}
+
 function PlaceholderRoute() {
   const location = useLocation();
   const cfg = ROUTE_PHASE[location.pathname];
@@ -233,6 +241,7 @@ export function App() {
         <Route path="/app/reports" element={<ReportsRoute />} />
         <Route path="/app/documents" element={<DocumentsRoute />} />
         <Route path="/app/documents-audit" element={<DocumentsAuditRoute />} />
+        <Route path="/app/ai-config" element={<AIConfigRoute />} />
         {Object.keys(ROUTE_PHASE)
           .filter(
             (p) =>
@@ -244,7 +253,8 @@ export function App() {
               p !== "/app/risk-monitor" &&
               p !== "/app/reports" &&
               p !== "/app/documents" &&
-              p !== "/app/documents-audit"
+              p !== "/app/documents-audit" &&
+              p !== "/app/ai-config"
           )
           .map((path) => (
             <Route key={path} path={path} element={<PlaceholderRoute />} />

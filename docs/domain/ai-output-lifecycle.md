@@ -74,6 +74,10 @@ turned into a formal record" — the originating AI label and the audit trail
 are preserved on the formal record. The AI never replaces the PI judgment
 or skips investigator confirmation for safety events.
 
+Having adopt/reject endpoints is necessary but not sufficient. Every service endpoint that converts or references AI-derived content as a formal record MUST enforce the promotion rule server-side. At minimum this includes AI-derived protocol activation and report confirmation.
+
+The promotion boundary MUST also verify that the AI output belongs to the same project and matches the expected output kind, target object, and version. `Pending`, `Rejected`, and `NeedsInvestigatorConfirmation` are rejected. A purely human-authored protocol or report uses an explicit non-AI path and MUST NOT create a fictitious AI output merely to satisfy this guard.
+
 ## Audit Chain
 
 - `ai-output-generated` — written by the worker when the output is created.

@@ -27,6 +27,9 @@ Each worker must receive these files:
 - Do not hide unauthorized sensitive data completely when the design requires a permission message.
 - Use typed enums for lifecycle states instead of ad hoc strings.
 - Add tests for every state transition, permission rule, and audit-producing action.
+- Resolve list/export scope, target-object project access, and target-project role before returning or mutating project-owned data.
+- For Subject routes, derive subject/project scope from the authenticated identity and add self-only negative tests.
+- Enforce `canPromoteAIOutput` at AI-to-formal-record boundaries; adopt/reject endpoints alone do not satisfy the contract.
 - For Web back-office work, use `Web后台UI设计/src/app/App.tsx` as the visual and interaction baseline. Extract and productize it; do not invent a new Web UI without recording a specific reason.
 - Treat prototype mock arrays as seed-data shape references only. Do not keep final product pages dependent on in-component mock arrays.
 
@@ -104,6 +107,11 @@ Every worker must end with:
 - Sensitive identity fields are masked by default.
 - Full sensitive-data views are permission-gated and logged.
 - Sensitive exports require confirmation and create export records.
+- Cross-project list, detail, and mutation attempts return `403` or a non-enumerating not-found response according to the route contract.
+- Multi-project actors are authorized using their role in the target project.
+- Subject-originated data preserves source and cannot be silently overwritten by Web users.
+- Assisted entry, where allowed, remains distinct, attributed, reasoned, and visibly labelled.
+- AI-derived protocol/report promotion verifies confirmation state, project, output kind, target object, and version.
 
 ## Rejection Criteria
 
@@ -111,6 +119,9 @@ Reject the handoff if any of these are true:
 
 - A critical mutation has no server-side audit event.
 - AI output can become final without human confirmation.
+- A route trusts `?projectId=` or an object ID without verifying project assignment.
+- A multi-project actor receives authority from a role held only in another project.
+- A Subject can access another Subject's task or record, or a Web action is misrepresented as Subject self-entry.
 - Subject PII is displayed unmasked to ordinary roles.
 - A high-risk or SAE closure has no required reason.
 - The implementation uses only hardcoded local component data for a page that should exercise backend state.

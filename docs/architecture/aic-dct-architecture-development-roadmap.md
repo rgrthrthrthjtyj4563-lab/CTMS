@@ -5,6 +5,7 @@
 > - `AIC-DCT UI Design Document.pdf`, 40 pages, extracted on 2026-07-09.
 > - `Web后台UI设计/`, reviewed on 2026-07-09. This is a runnable Vite/React Figma Make prototype and is the primary Web back-office visual and interaction baseline.
 > - `docs/ui/web-prototype-inventory.md`, created on 2026-07-09 as the implementation inventory for the prototype.
+> - `docs/decisions/2026-07-14-phase-3-closure-and-subject-source-data.md`, the accepted delivery and source-data boundary decision.
 
 ## 1. Architect Assessment
 
@@ -80,6 +81,8 @@ Required modules:
 - Symptom report.
 - File upload.
 - My profile.
+
+Subject mobile is the default origin for Subject-reported source data. The Web back office may monitor, query, confirm, and handle those records, but it must not silently impersonate a Subject or overwrite an original Subject response. Approved staff-assisted entry is a separately labelled, fully audited record; it is not Subject self-entry.
 
 ### Provider And Audit Surfaces
 
@@ -272,29 +275,35 @@ Deliverables:
 
 Exit criteria:
 
-- AI outputs are never treated as final records before human confirmation.
+- Task 3.6 is integrated as a clean, reviewable unit and its RBAC, tests, and API contract agree.
+- AI-derived protocol activation, report confirmation, and any other promotion path reject outputs that are not `Adopted` or `EditedAdopted`; purely human-authored records use an explicit non-AI path.
+- Every Phase 0-3 list/export endpoint resolves an authorized project scope, every detail/mutation endpoint checks the target object's project, and permissions use the actor's role in that target project.
+- Cross-project list, detail, and mutation attempts are covered by negative tests.
 - Risk creation, assignment, handling, closure, and audit history are end-to-end testable.
 - AE/SAE reporting deadline states are correctly colored and cannot be silently closed.
+- Protocol parse-to-review-to-activation and report draft-to-confirmation-to-export have normal HTTP paths and complete audit chains.
 
-### M4 - Drug, Sample, Mobile Subject App, Provider/Audit Views
+### M4 - Subject, Provider, Drug/Sample, And Audit Surfaces
 
 Goal: extend the system beyond the Web back office into subject and service-provider operations.
 
 Duration: 4 weeks.
 
-Deliverables:
+Delivery order:
 
-- Drug and sample management.
-- Subject mobile app core flows.
-- Provider task views for logistics, sample collection, and home nursing.
-- Audit/regulator read-only view.
-- Export and compliance smoke tests.
+1. **M4A - Minimum Subject source-data loop:** identity binding, today's tasks, ePRO, symptom report, Web handling, and audit replay.
+2. **M4B - Complete Subject experience:** electronic consent, medication, remote visit, reminders, messages, accessibility, and recovery flows.
+3. **M4C - Provider and supply operations:** Provider task views, drug/sample and cold-chain workflows, and any dedicated read-only audit/regulator presentation.
 
-Exit criteria:
+M4A exit criteria:
 
-- A demo subject can complete daily tasks, questionnaire, symptom report, and remote visit entry from mobile.
-- Drug/sample exception tasks surface in Web risk and provider views.
-- Read-only audit users can inspect records without mutating data.
+- A Subject identity can access only its bound subject, tasks, and records; client-supplied project/subject identifiers cannot widen scope.
+- A Subject submits ePRO and a symptom report from mobile, with source, identity, version, timestamps, and audit metadata preserved.
+- A severe symptom creates a safety-review task or risk signal that CRC/PI handles in Web.
+- Web users cannot silently overwrite the original Subject response; corrections and assisted entries remain distinct and attributable.
+- The repeatable smoke path is Web task assignment -> Subject submission -> system trigger -> Web handling -> audit replay.
+
+M4B/M4C exit criteria remain governed by the Phase 4 plan and do not block acceptance of M4A.
 
 ## 5. AI Worker Execution Model
 
