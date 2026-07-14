@@ -1,5 +1,10 @@
 # Phase 4 Mobile, Provider, Drug/Sample, And Compliance Development Plan
 
+> **Status (2026-07-14): PHASE 4 IS DEFERRED.** Phase 3 is in active closure
+> (Task 3.7 - project isolation + AI promotion gates). Do NOT open Phase 4
+> workstreams until Phase 3 reports Done. The split below is preserved so
+> the next AI agent does not pick up the full Phase 4 scope as one batch.
+
 ## Goal
 
 Complete the multi-party DCT operating loop by adding subject mobile flows, provider task views, drug/sample management, and read-only audit/regulator access.
@@ -8,11 +13,24 @@ Complete the multi-party DCT operating loop by adding subject mobile flows, prov
 
 Phase 4 is a program, not one indivisible implementation batch:
 
-1. **Phase 4A - Minimum Subject source-data loop** is the next executable slice.
-2. **Phase 4B - Complete Subject experience** follows after 4A acceptance.
-3. **Phase 4C - Provider and supply operations** follows after the Subject boundary is stable.
+1. **Phase 4A (M4A) - Minimum Subject source-data loop** is the next executable slice after Phase 3 Done.
+2. **Phase 4B (M4B) - Complete Subject experience** follows after 4A acceptance.
+3. **Phase 4C (M4C) - Provider and supply operations** follows after the Subject boundary is stable.
 
 Do not begin Subject write APIs until Phase 3 Task 3.7 has stabilized the shared project/role guards. Low-coupling mobile shell and interaction preparation may overlap.
+
+### M4A scope summary (next, after Phase 3 Done)
+
+- Subject API surface: my-tasks, ePRO submit, symptom report (Subject identity enforced server-side; subjectId is bound to the authenticated identity, not a client-supplied value).
+- Minimum Subject client or demonstrable Expo harness (consistent with the Phase 4 plan).
+- Web reads / handles those records; must NOT silently mutate Subject-original payloads.
+- If CRC assisted-entry is needed: distinct `AssistedEntry` record + strong audit; no impersonation, no surrogate consent signature.
+- Demo scripts must mark data origin as the Subject channel; seed data is NOT a Subject source.
+
+### M4B / M4C scope summary (later; do NOT start under M4A)
+
+- Full Subject experience (notifications, eCOA library, offline).
+- Provider task views (Logistics + Nurse), drug dispatch / receive, sample collect / transfer, cold chain, regulator read-only surface.
 
 ### Source-Data Rule
 
