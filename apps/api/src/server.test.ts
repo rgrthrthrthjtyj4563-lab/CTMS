@@ -174,10 +174,18 @@ describe('AI Clinical Operations API - IMV workflow', () => {
     expect(items.some((i: { type: string }) => i.type === 'FOLLOW_UP_ITEM')).toBe(true);
     expect(items.some((i: { type: string }) => i.type === 'TASK')).toBe(true);
 
-    // Sources and origin present
+    // Sources and origin present; DEMO_MODE must not claim MODEL when rules ran
     for (const item of items) {
       expect(item.origin).toBeTruthy();
       expect(item.sources).toBeTruthy();
+    }
+    if (process.env.DEMO_MODE === '1' || process.env.DEMO_MODE === 'true') {
+      const modelInfo = body.actionPack.modelInfo as { origin?: string; model?: string } | null;
+      expect(modelInfo?.origin).toBe('RULE');
+      expect(modelInfo?.model).toMatch(/rules/);
+      for (const item of items) {
+        expect(item.origin).toBe('RULE');
+      }
     }
 
     // Second complete is idempotent — same pack, no error

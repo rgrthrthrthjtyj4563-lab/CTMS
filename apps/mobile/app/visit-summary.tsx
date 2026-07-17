@@ -67,22 +67,29 @@ export default function VisitSummaryScreen() {
   const [endTimeLocal, setEndTimeLocal] = useState('');
   const [note, setNote] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { autoOpenPack?: boolean }) => {
     if (!visitId) return;
     setLoading(true);
-    setLoadingHint('整理访视总结…');
     setError(null);
+    const autoOpen = opts?.autoOpenPack !== false;
     try {
-      // Ensure complete + single pack (idempotent). Prefer route param to avoid re-fetch loops.
+      // Staged AI organize feedback (product narrative, not raw "generating pack")
+      setLoadingHint('正在汇总现场记录…');
+      await new Promise((r) => setTimeout(r, 280));
+
       let resolvedPackId = packIdParam ?? null;
       if (!resolvedPackId) {
-        setLoadingHint('正在生成行动包（首次可能需数秒）…');
+        setLoadingHint('正在识别 Issue 和风险…');
+        await new Promise((r) => setTimeout(r, 200));
+        setLoadingHint('正在生成任务、工时和报告草稿…');
         const complete = await api.completeVisit(visitId);
         resolvedPackId = complete.actionPack?.id ?? null;
+      } else {
+        setLoadingHint('加载已有行动包（不重复生成）…');
       }
       setPackId(resolvedPackId);
-      setLoadingHint('加载总结内容…');
 
+      setLoadingHint('整理完成，请确认…');
       const detail = await api.visitDetail(visitId);
       setVisit({
         status: detail.visit.status,
@@ -112,6 +119,15 @@ export default function VisitSummaryScreen() {
       if (resolvedPackId) {
         const pack = await api.actionPack(resolvedPackId);
         setItems(pack.items);
+        // Product flow: after organize, land on AI action pack (candidates), not stuck on summary.
+        if (autoOpen && pack.items.length > 0 && !packIdParam) {
+          setLoading(false);
+          router.replace({
+            pathname: '/action-pack',
+            params: { packId: resolvedPackId },
+          });
+          return;
+        }
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '加载失败');
@@ -191,7 +207,34 @@ export default function VisitSummaryScreen() {
     return (
       <View style={[styles.screen, styles.center]}>
         <ActivityIndicator color={colors.primary} size="large" />
+        <Text style={styles.loadingTitle}>正在整理现场记录</Text>
         <Text style={styles.loadingText}>{loadingHint}</Text>
+        <Text style={styles.loadingSub}>
+          AI 将拆出 Issue / 任务 / 工时 / 报告草稿等候选，不会直接写入正式记录
+        </Text>
+      </View>
+    );
+  }
+
+  if (error && !packId) {
+    return (
+      <View style={[styles.screen, styles.center, { padding: 24 }]}>
+        <AlertTriangle size={28} color={colors.amber} />
+        <Text style={styles.failTitle}>整理失败</Text>
+        <Text style={styles.failText}>{error}</Text>
+        <Pressable style={styles.retryPrimary} onPress={() => void load({ autoOpenPack: true })}>
+          <Text style={styles.retryPrimaryText}>重新整理</Text>
+        </Pressable>
+        <Pressable
+          style={styles.retryGhost}
+          onPress={() =>
+            visitId
+              ? router.replace({ pathname: '/imv-active', params: { visitId } })
+              : router.back()
+          }
+        >
+          <Text style={styles.retryGhostText}>返回现场记录</Text>
+        </Pressable>
       </View>
     );
   }
@@ -201,27 +244,34 @@ export default function VisitSummaryScreen() {
       <View style={styles.header}>
         <StatusBar />
         <View style={styles.headerRow}>
-          <Pressable onPress={() => router.back()}>
+          <Pressable
+            onPress={() =>
+              visitId
+                ? router.replace({ pathname: '/imv-active', params: { visitId } })
+                : router.back()
+            }
+          >
             <ChevronLeft size={22} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.headerTitle}>
-            <Text style={styles.h2}>结束访视 · 总结确认</Text>
+            <Text style={styles.h2}>结束访视 · AI 已整理</Text>
             <Text style={styles.h2sub}>
               {visit?.projectCode} · {visit?.siteName}
             </Text>
           </View>
-          <Tag status="pending" label="待确认" />
+          <Tag status="pending" label="候选草稿" />
         </View>
         <View style={styles.notice}>
           <Info size={12} color={colors.primary} />
           <Text style={styles.noticeText}>
-            请确认时间、访视活动、问题、行动项与工时。确认后进入逐项审查，不会重复生成行动包。
+            已根据现场素材生成业务候选（非正式记录）。请先看行动包中的 Issue / 任务 / 工时 /
+            报告草稿，再逐项确认。再次进入不会重复生成。
           </Text>
         </View>
       </View>
 
       {error ? (
-        <Pressable style={styles.errorBanner} onPress={() => void load()}>
+        <Pressable style={styles.errorBanner} onPress={() => void load({ autoOpenPack: false })}>
           <Text style={styles.errorText}>{error}</Text>
           <Text style={styles.errorRetry}>重试</Text>
         </Pressable>
@@ -352,11 +402,11 @@ export default function VisitSummaryScreen() {
       </ScrollView>
 
       <View style={styles.footer}>
-        <Pressable style={styles.ghostFooter} onPress={goActionPack}>
-          <Text style={styles.ghostFooterText}>查看行动包明细</Text>
+        <Pressable style={styles.ghostFooter} onPress={goConfirm}>
+          <Text style={styles.ghostFooterText}>逐项确认</Text>
         </Pressable>
-        <Pressable style={styles.primaryFooter} onPress={goConfirm}>
-          <Text style={styles.primaryFooterText}>进入逐项确认 →</Text>
+        <Pressable style={styles.primaryFooter} onPress={goActionPack}>
+          <Text style={styles.primaryFooterText}>查看 AI 整理结果 →</Text>
         </Pressable>
       </View>
     </View>
@@ -365,8 +415,29 @@ export default function VisitSummaryScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  center: { alignItems: 'center', justifyContent: 'center' },
-  loadingText: { marginTop: 12, color: colors.textMuted },
+  center: { alignItems: 'center', justifyContent: 'center', padding: 24 },
+  loadingTitle: { marginTop: 16, fontSize: 16, fontWeight: '700', color: colors.text },
+  loadingText: { marginTop: 8, color: colors.primary, fontWeight: '600' },
+  loadingSub: {
+    marginTop: 10,
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 18,
+    maxWidth: 280,
+  },
+  failTitle: { marginTop: 12, fontSize: 16, fontWeight: '700', color: colors.text },
+  failText: { marginTop: 8, fontSize: 13, color: colors.textSecondary, textAlign: 'center' },
+  retryPrimary: {
+    marginTop: 20,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: radius.button,
+  },
+  retryPrimaryText: { color: colors.white, fontWeight: '600' },
+  retryGhost: { marginTop: 12, padding: 10 },
+  retryGhostText: { color: colors.primary, fontWeight: '600' },
   header: { backgroundColor: colors.card },
   headerRow: {
     flexDirection: 'row',

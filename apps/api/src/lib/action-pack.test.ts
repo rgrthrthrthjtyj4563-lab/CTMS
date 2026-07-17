@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { parseWithRules } from './ai.js';
 import {
   countActionTypes,
@@ -6,6 +6,7 @@ import {
   normalizeGeneratedPack,
   normalizeSeverity,
   parseOptionalDate,
+  resolvePackModelMeta,
   toDateOnly,
   toIsoDate,
 } from './action-pack.js';
@@ -253,5 +254,56 @@ describe('normalizeGeneratedPack', () => {
     expect((cleanedIssue.data as Record<string, unknown>).severity).toBe('HIGH');
     const cleanedReport = cleaned.actions.find((a) => a.type === 'REPORT_DRAFT')!;
     expect((cleanedReport.data as Record<string, unknown>).sections).toEqual([]);
+  });
+});
+
+describe('resolvePackModelMeta', () => {
+  const keys = [
+    'DEMO_MODE',
+    'DEMO_PROFILE',
+    'TEXT_LLM_API_KEY',
+    'XAI_API_KEY',
+    'TEXT_LLM_MODEL',
+    'XAI_MODEL',
+  ] as const;
+  const prev: Record<string, string | undefined> = {};
+
+  afterEach(() => {
+    for (const k of keys) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  });
+
+  function snapshotEnv() {
+    for (const k of keys) prev[k] = process.env[k];
+  }
+
+  it('labels RULE/rules-demo when DEMO_MODE=1 even if LLM key is set', () => {
+    snapshotEnv();
+    process.env.DEMO_MODE = '1';
+    process.env.TEXT_LLM_API_KEY = 'sk-test';
+    process.env.TEXT_LLM_MODEL = 'gpt-test';
+    delete process.env.XAI_API_KEY;
+    expect(resolvePackModelMeta()).toEqual({ origin: 'RULE', model: 'rules-demo' });
+  });
+
+  it('labels MODEL when not demo and LLM key present', () => {
+    snapshotEnv();
+    delete process.env.DEMO_MODE;
+    delete process.env.DEMO_PROFILE;
+    process.env.TEXT_LLM_API_KEY = 'sk-test';
+    process.env.TEXT_LLM_MODEL = 'gpt-test';
+    delete process.env.XAI_API_KEY;
+    expect(resolvePackModelMeta()).toEqual({ origin: 'MODEL', model: 'gpt-test' });
+  });
+
+  it('labels RULE/rules when not demo and no LLM key', () => {
+    snapshotEnv();
+    delete process.env.DEMO_MODE;
+    delete process.env.DEMO_PROFILE;
+    delete process.env.TEXT_LLM_API_KEY;
+    delete process.env.XAI_API_KEY;
+    expect(resolvePackModelMeta()).toEqual({ origin: 'RULE', model: 'rules' });
   });
 });

@@ -30,8 +30,8 @@ export default function VoiceScreen() {
 
     if (Platform.OS === 'web') {
       Alert.alert(
-        'Web 环境说明',
-        '浏览器对录音格式与麦克风权限支持有限，转写可能失败。建议使用移动端 App，或转写失败时手动填写内容。',
+        '浏览器录音说明',
+        '当前浏览器录音能力有限，可先手动输入；真机 App 环境支持语音转写。转写失败时可直接编辑文字后发送。',
       );
     }
 
@@ -131,7 +131,11 @@ export default function VoiceScreen() {
         content: text,
         transcript: text,
       });
-      router.replace({ pathname: '/imv-active', params: { visitId } });
+      // Return with flash flag so IMV page shows "素材已加入 / 待 AI 整理"
+      router.replace({
+        pathname: '/imv-active',
+        params: { visitId, voiceDone: '1' },
+      });
     } catch (e) {
       Alert.alert('发送失败', e instanceof Error ? e.message : '请重试');
     } finally {
@@ -160,7 +164,9 @@ export default function VoiceScreen() {
 
       {Platform.OS === 'web' && (
         <View style={styles.webNote}>
-          <Text style={styles.webNoteText}>Web 环境：录音转写能力受限，失败时可手动填写</Text>
+          <Text style={styles.webNoteText}>
+            当前浏览器录音能力有限，可先手动输入；真机环境支持语音转写
+          </Text>
         </View>
       )}
 

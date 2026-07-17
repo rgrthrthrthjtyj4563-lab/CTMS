@@ -6,6 +6,12 @@ import type {
   MonitoringVisitType,
 } from '@clinical/domain';
 import { normalizeGeneratedPack } from './action-pack.js';
+import {
+  ISSUE_CATEGORY_LABEL,
+  inferSeverityBucket,
+  normalizeIssueCategory,
+  severityToDomain,
+} from './knowledge-rules.js';
 
 export interface AiContext {
   projectId: string;
@@ -54,6 +60,23 @@ function getOpenAIClient(): OpenAI | null {
 
 function getTextModel(): string {
   return process.env.TEXT_LLM_MODEL || process.env.XAI_MODEL || 'grok-4.5';
+}
+
+/**
+ * Demo guard — when DEMO_MODE is enabled (or DEMO_PROFILE=demo), force the
+ * rule-based parser even if a TEXT_LLM_API_KEY is configured. This guarantees
+ * deterministic action-pack output for investor demos and screen recordings.
+ *
+ * Activation (any of):
+ *   - DEMO_MODE=1 | true | yes | on
+ *   - DEMO_PROFILE=demo
+ */
+export function isDemoMode(): boolean {
+  const flag = (process.env.DEMO_MODE || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(flag)) return true;
+  const profile = (process.env.DEMO_PROFILE || '').trim().toLowerCase();
+  if (profile === 'demo') return true;
+  return false;
 }
 
 /** Rule-based parser for acceptance test and offline/test mode */
@@ -335,18 +358,25 @@ function extractPersonnel(text: string): string[] {
 }
 
 function buildWorkSummary(text: string, subjects?: number): string {
-  const parts: string[] = ['今天在华山医院完成IMV现场监查'];
+  const siteHint = /上海六院|第六人民/.test(text)
+    ? '上海六院'
+    : /华山/.test(text)
+      ? '华山医院'
+      : '研究中心';
+  const parts: string[] = [`今天在${siteHint}完成IMV现场监查`];
   if (subjects) parts.push(`核对了${subjects}例受试者`);
-  if (/原始记录/.test(text)) parts.push('核对原始记录');
-  if (/药物/.test(text)) parts.push('检查药物管理文件');
+  if (/原始记录|病历/.test(text)) parts.push('核对原始记录/病历');
+  if (/药物|药房|温度/.test(text)) parts.push('检查药物管理文件');
   if (/知情同意/.test(text)) parts.push('检查知情同意文件');
   return parts.join('，');
 }
 
 function extractFindings(text: string): string[] {
   const findings: string[] = [];
-  if (/未签字/.test(text)) findings.push('受试者原始记录未签字');
-  if (/温度记录缺失|温度记录少/.test(text)) findings.push('药物温度记录缺失');
+  if (/未签字/.test(text)) findings.push('受试者原始记录/病历未签字');
+  if (/温度记录.*缺失|温度记录缺失|温度记录少/.test(text)) {
+    findings.push('药物温度记录缺失');
+  }
   return findings;
 }
 
@@ -354,55 +384,106 @@ interface ParsedIssue {
   title: string;
   description: string;
   category: string;
+  categoryLabel?: string;
   severity: string;
+  severityBucket?: string;
   subjectId?: string;
   responsiblePerson?: string;
   targetDate?: string;
   requiredEvidence?: string;
+  /** Always candidate — never final AE/SAE judgment */
+  clinicalSafetyFlag?: 'suspected_ae' | 'suspected_sae' | null;
 }
 
 function extractIssues(text: string, _ctx: AiContext): ParsedIssue[] {
   const issues: ParsedIssue[] = [];
 
-  // Issue 1: unsigned source documents
-  const unsignedMatch = text.match(/(\d+)\s*号受试者.*?未签字/);
-  if (unsignedMatch || /原始记录未签字/.test(text)) {
+  // Issue 1: unsigned source / medical records
+  const unsignedMatch = text.match(/(\d+)\s*号受试者.{0,40}未签字/);
+  if (unsignedMatch || /原始(记录|病历).{0,12}未签字|未签字/.test(text)) {
     const subjectId = unsignedMatch ? unsignedMatch[1] : '03';
+    const category = normalizeIssueCategory('SOURCE_RECORD');
+    const severityBucket = inferSeverityBucket({ category, text });
     issues.push({
-      title: `${subjectId}号受试者原始记录未签字`,
-      description: `${subjectId}号受试者两份原始记录未签字，需补齐签字`,
-      category: 'DOCUMENTATION',
-      severity: 'MEDIUM',
+      title: `${subjectId}号受试者原始病历/记录未签字`,
+      description: `${subjectId}号受试者存在未签字的原始病历或源文件，需补齐签字并归档`,
+      category,
+      categoryLabel: ISSUE_CATEGORY_LABEL[category],
+      severity: severityToDomain(severityBucket),
+      severityBucket,
       subjectId,
-      responsiblePerson: 'CRC小王',
+      responsiblePerson: extractCrcName(text) || 'CRC小王',
       targetDate: parseDueDate(text, '周五'),
       requiredEvidence: '已签字的原始记录复印件',
+      clinicalSafetyFlag: null,
     });
   }
 
-  // Issue 2: missing temperature log
-  const tempMatch = text.match(/(\d+月\d+日).*?温度记录缺失/);
-  if (tempMatch || /温度记录缺失/.test(text)) {
-    const dateRef = tempMatch ? tempMatch[1] : '7月12日';
+  // Issue 2: missing temperature log (supports "7 月 10 日" spacing)
+  const tempMatch =
+    text.match(/(\d+\s*月\s*\d+\s*日).{0,20}温度记录.{0,8}缺失/) ||
+    text.match(/温度记录\s*(\d+\s*月\s*\d+\s*日).{0,8}缺失/);
+  if (tempMatch || /温度记录缺失|温度记录少|药房温度/.test(text)) {
+    const rawDate = tempMatch ? tempMatch[1].replace(/\s+/g, '') : '相关日期';
+    const category = normalizeIssueCategory('DRUG_ACCOUNTABILITY');
+    const severityBucket = inferSeverityBucket({ category, text });
     issues.push({
-      title: `${dateRef}药物温度记录缺失`,
-      description: `${dateRef}药物储存温度记录缺失，需补齐`,
-      category: 'DRUG_ACCOUNTABILITY',
-      severity: 'MEDIUM',
-      responsiblePerson: 'CRC小王',
+      title: `${rawDate}药物温度记录缺失`,
+      description: `${rawDate}药房/药物储存温度记录缺失，需补齐并由责任人确认`,
+      category,
+      categoryLabel: ISSUE_CATEGORY_LABEL[category],
+      severity: severityToDomain(severityBucket),
+      severityBucket,
+      responsiblePerson: extractCrcName(text) || 'CRC小王',
       targetDate: parseDueDate(text, '周五'),
       requiredEvidence: '补齐的药物温度记录',
+      clinicalSafetyFlag: null,
+    });
+  }
+
+  // Suspected AE/SAE — candidates only, never final medical judgment
+  if (/\bSAE\b|严重不良事件/.test(text)) {
+    const category = normalizeIssueCategory('SUSPECTED_SAE');
+    const severityBucket = inferSeverityBucket({ category, text });
+    issues.push({
+      title: '疑似 SAE（待医学确认）',
+      description: '现场描述涉及疑似严重不良事件相关内容，仅作候选标记，须医学/安全人工确认',
+      category,
+      categoryLabel: ISSUE_CATEGORY_LABEL[category],
+      severity: severityToDomain(severityBucket),
+      severityBucket,
+      responsiblePerson: 'PI/医学',
+      clinicalSafetyFlag: 'suspected_sae',
+    });
+  } else if (/\bAE\b|不良事件/.test(text) && !/无不良/.test(text)) {
+    const category = normalizeIssueCategory('SUSPECTED_AE');
+    const severityBucket = inferSeverityBucket({ category, text });
+    issues.push({
+      title: '疑似 AE（待医学确认）',
+      description: '现场描述涉及疑似不良事件相关内容，仅作候选标记，须医学人工确认',
+      category,
+      categoryLabel: ISSUE_CATEGORY_LABEL[category],
+      severity: severityToDomain(severityBucket),
+      severityBucket,
+      responsiblePerson: 'PI/医学',
+      clinicalSafetyFlag: 'suspected_ae',
     });
   }
 
   return issues;
 }
 
+function extractCrcName(text: string): string | undefined {
+  // Prefer short name: "CRC小王" / "CRC 小王" before 承诺/，
+  const m = text.match(/CRC\s*([^\s，,。承诺]{1,8})/);
+  return m ? `CRC${m[1]}` : undefined;
+}
+
 function extractTasks(text: string, issues: ParsedIssue[]) {
   const tasks: Array<{ title: string; description?: string; assignee?: string; dueDate?: string; relatedIssueTitle?: string }> = [];
 
-  if (/CRC.*?承诺.*?周五/.test(text) || /周五前补齐/.test(text)) {
-    for (const issue of issues) {
+  if (/CRC.*?承诺.*?周五/.test(text) || /周五前补齐/.test(text) || /承诺周五/.test(text)) {
+    for (const issue of issues.filter((i) => !i.clinicalSafetyFlag)) {
       tasks.push({
         title: `补齐: ${issue.title}`,
         description: issue.description,
@@ -413,12 +494,21 @@ function extractTasks(text: string, issues: ParsedIssue[]) {
     }
   }
 
-  if (/PI.*?下周一.*?复核/.test(text)) {
+  if (/PI.*?下周一.*?复核/.test(text) || /PI\s*下周一/.test(text)) {
     tasks.push({
       title: 'PI复核整改文件',
       description: 'PI下周一复核CRC补齐的文件',
       assignee: 'PI',
       dueDate: parseDueDate(text, '下周一'),
+    });
+  }
+
+  for (const issue of issues.filter((i) => i.clinicalSafetyFlag)) {
+    tasks.push({
+      title: `医学确认: ${issue.title}`,
+      description: 'AI 仅标记为疑似，须人工完成医学/安全确认，禁止自动结案',
+      assignee: issue.responsiblePerson || 'PI/医学',
+      relatedIssueTitle: issue.title,
     });
   }
 
@@ -472,8 +562,13 @@ function isValidGeneratedPack(parsed: GeneratedActionPack, _ctx: AiContext): boo
 export async function generateActionPack(ctx: AiContext): Promise<GeneratedActionPack> {
   const combinedText = ctx.inputs.map((i) => i.content).join('\n');
   const client = getOpenAIClient();
+  const demoMode = isDemoMode();
 
-  if (!client) {
+  // Demo mode: always use rules, even when a key is configured.
+  if (demoMode || !client) {
+    if (demoMode) {
+      console.warn('[DEMO_MODE] forcing rule-based action pack generation');
+    }
     return normalizeGeneratedPack(parseWithRules(ctx, combinedText));
   }
 

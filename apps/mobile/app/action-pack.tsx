@@ -17,11 +17,51 @@ const ICON_MAP: Record<string, { Icon: typeof Calendar; bg: string; color: strin
   HOURS: { Icon: Clock, bg: colors.skyLight, color: colors.sky },
   ISSUE: { Icon: AlertTriangle, bg: colors.redLight, color: colors.red },
   TASK: { Icon: CheckCircle2, bg: colors.amberLight, color: colors.amber },
+  FOLLOW_UP_ITEM: { Icon: CheckCircle2, bg: colors.amberLight, color: colors.amber },
   EVIDENCE: { Icon: Link2, bg: colors.violetLight, color: colors.violet },
   REPORT_DRAFT: { Icon: FileText, bg: colors.indigoLight, color: colors.indigo },
   RISK_CANDIDATE: { Icon: TrendingUp, bg: colors.redLight, color: colors.red },
   CAPA_CANDIDATE: { Icon: AlertTriangle, bg: colors.amberLight, color: colors.amber },
 };
+
+const TYPE_LABEL: Record<string, string> = {
+  MONITORING_VISIT_RECORD: '监查记录候选',
+  HOURS: '工时记录候选',
+  ISSUE: 'Issue 候选',
+  TASK: '后续任务候选',
+  FOLLOW_UP_ITEM: '跟进任务候选',
+  EVIDENCE: '证据说明候选',
+  REPORT_DRAFT: '报告草稿候选',
+  RISK_CANDIDATE: '风险候选',
+  CAPA_CANDIDATE: 'CAPA 候选',
+};
+
+function itemStatusLabel(status?: string, packStatus?: string): string {
+  if (packStatus === 'SUBMITTED' || packStatus === 'APPROVED') return '已提交';
+  switch (status) {
+    case 'CONFIRMED':
+    case 'SAVED':
+      return '已确认';
+    case 'DELETED':
+    case 'VOIDED':
+      return '已删除';
+    case 'EDITED':
+      return '待确认（已编辑）';
+    case 'PENDING_CONFIRM':
+    case 'SUGGESTED':
+    default:
+      return 'AI 草稿 · 待确认';
+  }
+}
+
+function severityLabel(raw: unknown): string | null {
+  if (raw == null || raw === '') return null;
+  const s = String(raw);
+  if (/CRITICAL|Critical/i.test(s)) return 'Critical';
+  if (/HIGH|Major/i.test(s)) return 'Major';
+  if (/MEDIUM|Minor|LOW/i.test(s)) return 'Minor';
+  return s;
+}
 
 export default function ActionPackScreen() {
   const { packId, mode } = useLocalSearchParams<{ packId: string; mode?: string }>();
@@ -39,6 +79,12 @@ export default function ActionPackScreen() {
 
   const items = data?.items ?? [];
   const followUp = data?.pack.followUpQuestions?.[0];
+  const packStatus = data?.pack.status;
+  const typeCounts = items.reduce<Record<string, number>>((acc, it) => {
+    const k = TYPE_LABEL[it.type] ?? it.type;
+    acc[k] = (acc[k] ?? 0) + 1;
+    return acc;
+  }, {});
 
   const decide = async (decision: 'APPROVE' | 'RETURN' | 'ESCALATE_QA') => {
     if (!packId || busy) return;
@@ -66,23 +112,34 @@ export default function ActionPackScreen() {
             <ChevronLeft size={22} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.headerTitle}>
-            <Text style={styles.h2}>{isReview ? '工作包审核' : 'AI 整理结果'}</Text>
+            <Text style={styles.h2}>{isReview ? '工作包审核' : 'AI 业务候选动作包'}</Text>
             <Text style={styles.h2sub}>
               {isReview
                 ? `${items.length} 项 · 请审核后决定通过或退回`
-                : `${items.length} 项业务动作 · 请逐项审查后确认`}
+                : `${items.length} 项候选 · 非正式记录，须逐项确认`}
             </Text>
           </View>
-          <Tag status={isReview ? 'pending' : 'draft'} label={isReview ? '待审核' : '草稿'} />
+          <Tag status={isReview ? 'pending' : 'draft'} label={isReview ? '待审核' : '候选草稿'} />
         </View>
         <View style={styles.notice}>
           <Zap size={12} color={colors.primary} />
           <Text style={styles.noticeText}>
             {isReview
               ? '以下为 CRA 提交的工作包内容。请核对来源与结论后做出审核决定。'
-              : 'AI 已识别以下业务动作。所有内容为草稿，确认后才写入正式记录。'}
+              : '不是语音转写结果页：AI 已把现场素材拆成 Issue / 任务 / 工时 / 报告等业务候选。确认前不写入正式记录；疑似 AE/SAE 仅供人工医学确认。'}
           </Text>
         </View>
+        {!isReview && items.length > 0 && (
+          <View style={styles.countBar}>
+            {Object.entries(typeCounts).map(([label, n]) => (
+              <View key={label} style={styles.countChip}>
+                <Text style={styles.countChipText}>
+                  {label} {n}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       <ScrollView style={styles.scroll} contentContainerStyle={{ padding: 16, gap: 8 }}>
@@ -91,6 +148,7 @@ export default function ActionPackScreen() {
             key={item.id}
             item={item}
             open={open === i}
+            packStatus={packStatus}
             onToggle={() => setOpen(open === i ? null : i)}
             onEdit={
               isReview
@@ -197,10 +255,11 @@ function formatSources(item: ActionItem): string {
 }
 
 function ActionCard({
-  item, open, onToggle, onEdit,
+  item, open, onToggle, onEdit, packStatus,
 }: {
   item: ActionItem;
   open: boolean;
+  packStatus?: string;
   onToggle: () => void;
   onEdit?: () => void;
 }) {
@@ -210,6 +269,24 @@ function ActionCard({
   const border = tag === 'risk' ? '#FECACA' : tag === 'pending' ? '#FDE68A' : undefined;
   const originTag =
     item.origin === 'MODEL' ? '模型' : item.origin === 'MANUAL' ? '人工' : '规则';
+  const typeLabel = TYPE_LABEL[item.type] ?? item.type;
+  const statusLabel = itemStatusLabel(item.status, packStatus);
+  const data = (item.data ?? {}) as Record<string, unknown>;
+  const sev = severityLabel(data.severityBucket ?? data.severity);
+  const owner = (data.responsiblePerson ?? data.assignee ?? data.owner) as string | undefined;
+  const due = (data.dueDate ?? data.targetDate) as string | undefined;
+  const categoryLabel = (data.categoryLabel ?? data.category) as string | undefined;
+  const safety =
+    data.clinicalSafetyFlag === 'suspected_sae'
+      ? '疑似 SAE · 须医学确认'
+      : data.clinicalSafetyFlag === 'suspected_ae'
+        ? '疑似 AE · 须医学确认'
+        : null;
+  const summary =
+    item.description ||
+    (typeof data.description === 'string' ? data.description : '') ||
+    (typeof data.workSummary === 'string' ? data.workSummary : '') ||
+    '';
 
   return (
     <Card borderColor={border}>
@@ -218,12 +295,21 @@ function ActionCard({
           <Icon size={14} color={meta.color} />
         </View>
         <View style={styles.actionBody}>
+          <Text style={styles.typeLabel}>{typeLabel}</Text>
           <Text style={styles.actionTitle}>{item.title}</Text>
           <View style={styles.actionMeta}>
-            <Tag status={tag} />
+            <Tag status={tag} label={statusLabel} />
             <Tag status="info" label={originTag} />
-            <Text style={styles.actionCount}>1 项</Text>
+            {sev ? <Tag status="risk" label={sev} /> : null}
           </View>
+          {summary ? (
+            <Text style={styles.summaryPreview} numberOfLines={2}>
+              {summary}
+            </Text>
+          ) : null}
+          <Text style={styles.sourcePreview} numberOfLines={2}>
+            {formatSources(item)}
+          </Text>
         </View>
         {onEdit ? (
           <Pressable
@@ -241,6 +327,19 @@ function ActionCard({
       {open && (
         <View style={styles.actionDetail}>
           {item.description && <Text style={styles.detailText}>{item.description}</Text>}
+          <View style={styles.metaGrid}>
+            {categoryLabel ? (
+              <Text style={styles.metaLine}>分类：{String(categoryLabel)}</Text>
+            ) : null}
+            {sev ? <Text style={styles.metaLine}>严重等级：{sev}</Text> : null}
+            {owner ? <Text style={styles.metaLine}>责任人：{owner}</Text> : null}
+            {due ? <Text style={styles.metaLine}>截止：{due}</Text> : null}
+            {typeof data.durationHours === 'number' ? (
+              <Text style={styles.metaLine}>工时：{data.durationHours} 小时</Text>
+            ) : null}
+            {safety ? <Text style={[styles.metaLine, { color: colors.red }]}>{safety}</Text> : null}
+            <Text style={styles.metaLine}>状态：{statusLabel}</Text>
+          </View>
           {item.items?.map((sub, j) => (
             <View key={j} style={styles.subItem}>
               <Text style={styles.subTitle}>{String(sub.title ?? '')}</Text>
@@ -265,15 +364,34 @@ const styles = StyleSheet.create({
   h2sub: { fontSize: 11, color: colors.textSecondary },
   notice: { flexDirection: 'row', gap: 8, padding: 14, backgroundColor: colors.primaryLight, borderBottomWidth: 1, borderBottomColor: `${colors.primary}25` },
   noticeText: { flex: 1, fontSize: 12, color: colors.primary, lineHeight: 18 },
+  countBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+  },
+  countChip: {
+    backgroundColor: '#F3F4F6',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  countChipText: { fontSize: 11, color: colors.textSecondary, fontWeight: '600' },
   scroll: { flex: 1 },
   actionHead: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
   actionIcon: { width: 32, height: 32, borderRadius: radius.button, alignItems: 'center', justifyContent: 'center' },
   actionBody: { flex: 1 },
+  typeLabel: { fontSize: 10.5, fontWeight: '700', color: colors.primary, letterSpacing: 0.3, marginBottom: 2 },
   actionTitle: { fontSize: typography.base, fontWeight: '600', color: colors.text },
-  actionMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
+  actionMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3, flexWrap: 'wrap' },
   actionCount: { fontSize: typography.xs, color: colors.textMuted },
+  summaryPreview: { marginTop: 4, fontSize: 12, color: '#4B5563', lineHeight: 17 },
+  sourcePreview: { marginTop: 4, fontSize: typography.xs, color: colors.textSecondary, lineHeight: 16 },
   actionDetail: { borderTopWidth: 1, borderTopColor: '#FAFAFA', padding: 14, backgroundColor: 'rgba(249,250,251,0.6)' },
   detailText: { fontSize: 12.5, color: '#374151', lineHeight: 20, marginBottom: 8 },
+  metaGrid: { gap: 4, marginBottom: 8 },
+  metaLine: { fontSize: 12, color: colors.textSecondary },
   subItem: { backgroundColor: colors.card, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.borderLight, padding: 10, marginBottom: 6 },
   subTitle: { fontSize: 12.5, fontWeight: '500', color: colors.text },
   sourceRow: { flexDirection: 'row', gap: 4, marginTop: 4 },

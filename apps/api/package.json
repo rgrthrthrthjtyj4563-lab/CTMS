@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e:imv": "tsx scripts/e2e-imv-mainflow.ts",
+    "demo:env-check": "tsx scripts/check-demo-env.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",

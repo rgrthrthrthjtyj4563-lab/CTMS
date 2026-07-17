@@ -363,11 +363,13 @@ export const api = {
         site: { name: string; code: string };
         inputs: Array<{
           id: string;
+          type?: string;
           content: string;
           transcript?: string;
           createdAt: string;
           version?: number;
           isVoided?: boolean;
+          status?: string;
         }>;
         activities?: Array<{
           id: string;
