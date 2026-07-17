@@ -224,6 +224,10 @@ function ActionCard({
             <Tag status="info" label={originTag} />
             <Text style={styles.actionCount}>1 项</Text>
           </View>
+          {/* Collapsed: show source one-liner so investor pitch can point to provenance without expanding. */}
+          <Text style={styles.sourcePreview} numberOfLines={2}>
+            {formatSources(item)}
+          </Text>
         </View>
         {onEdit ? (
           <Pressable
@@ -272,6 +276,7 @@ const styles = StyleSheet.create({
   actionTitle: { fontSize: typography.base, fontWeight: '600', color: colors.text },
   actionMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
   actionCount: { fontSize: typography.xs, color: colors.textMuted },
+  sourcePreview: { marginTop: 4, fontSize: typography.xs, color: colors.textSecondary, lineHeight: 16 },
   actionDetail: { borderTopWidth: 1, borderTopColor: '#FAFAFA', padding: 14, backgroundColor: 'rgba(249,250,251,0.6)' },
   detailText: { fontSize: 12.5, color: '#374151', lineHeight: 20, marginBottom: 8 },
   subItem: { backgroundColor: colors.card, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.borderLight, padding: 10, marginBottom: 6 },

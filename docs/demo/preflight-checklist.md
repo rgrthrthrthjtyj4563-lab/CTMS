@@ -19,26 +19,31 @@
 
 ## 3. 环境变量（`apps/api/.env`）
 
-> 演示日 `TEXT_LLM_API_KEY` 是否配置都可，下面两种都允许。
+> 演示日 `TEXT_LLM_API_KEY` 是否配置都可；**录屏/投资人演示必须开 DEMO_MODE**。
 
-- [ ] 强烈建议设置 `DEMO_MODE=1`（**有 key 也强制 rules**，输出确定）
+- [ ] **`DEMO_MODE=1`**（**有 key 也强制 rules**，输出确定）
   - 或 `DEMO_PROFILE=demo`
-  - 二选一即可；都不设 = 按是否有 key 自动选择（不推荐用于录屏）
+  - 都不设 = 有 key 时走 MODEL（输出可能漂，**禁止录屏**）
+- [ ] 运行检查（必须 exit 0）：
+  ```bash
+  pnpm demo:env-check
+  # 或：pnpm --filter @clinical/api demo:env-check
+  ```
 - [ ] `JWT_SECRET` 与 `apps/api/.env.example` 中保持一致，或新值但重启 API
 - [ ] `DATABASE_URL="file:./dev.db"`
 - [ ] `UPLOAD_DIR=./uploads`（演示附件会落到此目录）
 
-> 验证：在 `apps/api/.env` 中临时加 `DEMO_MODE=1`，启动后看到  
-> `[DEMO_MODE] forcing rule-based action pack generation` 日志即生效。
+> 验证：`pnpm demo:env-check` 通过后启动 API，日志应出现  
+> `[DEMO_MODE] forcing rule-based action pack generation`。
 
-## 4. 账号速查（来自 `db:seed:demo`）
+## 4. 账号速查（来自 seed / seed:demo）
 
-| 角色 | 登录账号（演示） | 可见范围 |
-|------|------------------|----------|
-| CRA  | `cra@demo.com`   | 今日 IMV 行动包/确认/提交 |
-| PM   | `pm@demo.com`    | 工作台审核/通过/退回 |
+| 角色 | 登录账号 | 密码 | 可见范围 |
+|------|----------|------|----------|
+| CRA  | `13800138001` | `password` | 今日 IMV 行动包/确认/提交 |
+| PM   | `13800138002` | `password` | 工作台审核/通过/退回 |
 
-> 口令与 hash 见 `apps/api/prisma/seed-demo.ts`，按文件中现有口令。
+> 演示上下文：先 `db:seed` 再 `db:seed:demo`（切到 ZZ-101 / 上海六院）。
 
 ## 5. API & Mobile 启动
 
