@@ -297,7 +297,7 @@ export async function ensureVisitActivities(visitId: string, visitType: string) 
 }
 
 /** Parse LLM/user date strings; invalid values (e.g. "补齐") become undefined. */
-function parseOptionalDate(value: unknown): Date | undefined {
+export function parseOptionalDate(value: unknown): Date | undefined {
   if (value == null || value === '') return undefined;
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? value : undefined;
@@ -305,6 +305,113 @@ function parseOptionalDate(value: unknown): Date | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+}
+
+/**
+ * Coerce a valid Date to the canonical ISO string used inside action item data.
+ * Lets downstream consumers (UI, audit) see a stable shape.
+ */
+export function toIsoDate(value: Date): string {
+  return value.toISOString();
+}
+
+export function toDateOnly(value: Date): string {
+  return value.toISOString().split('T')[0];
+}
+
+const SEVERITY_MAP: Record<string, string> = {
+  Major: 'HIGH',
+  HIGH: 'HIGH',
+  Critical: 'CRITICAL',
+  CRITICAL: 'CRITICAL',
+  Moderate: 'MEDIUM',
+  MEDIUM: 'MEDIUM',
+  Minor: 'LOW',
+  LOW: 'LOW',
+};
+
+export function normalizeSeverity(value: unknown): string {
+  if (typeof value !== 'string') return 'MEDIUM';
+  return SEVERITY_MAP[value] || SEVERITY_MAP[value.toUpperCase()] || 'MEDIUM';
+}
+
+const DATE_KEYS = [
+  'dueDate',
+  'targetDate',
+  'date',
+  'actualStartTime',
+  'actualEndTime',
+  'plannedDate',
+  'suggestedDueDate',
+];
+
+/**
+ * Sanitize an AI/LLM generated action item's `data` blob so confirm-time code
+ * never sees garbage strings. Invalid dates are deleted; severity is mapped;
+ * sections are coerced to arrays of records.
+ *
+ * Returns a shallow-cloned object — safe to mutate freely.
+ */
+export function normalizeActionItemData(
+  type: string,
+  raw: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = { ...(raw ?? {}) };
+
+  for (const key of DATE_KEYS) {
+    if (key in data) {
+      const parsed = parseOptionalDate(data[key]);
+      if (parsed) {
+        data[key] = type === 'HOURS' || key === 'date' || key === 'suggestedDueDate'
+          ? toDateOnly(parsed)
+          : toIsoDate(parsed);
+      } else if (data[key] != null && data[key] !== '') {
+        // garbage string like "补齐" or "下周某天" → drop
+        delete data[key];
+      } else {
+        delete data[key];
+      }
+    }
+  }
+
+  if (type === 'ISSUE' && 'severity' in data) {
+    data.severity = normalizeSeverity(data.severity);
+  }
+
+  if (type === 'REPORT_DRAFT') {
+    if (!Array.isArray(data.sections)) {
+      data.sections = [];
+    } else {
+      data.sections = (data.sections as unknown[]).filter(
+        (s): s is Record<string, unknown> =>
+          s != null && typeof s === 'object' && !Array.isArray(s),
+      );
+    }
+    if (typeof data.title === 'string') {
+      const t = data.title.trim();
+      if (!t) delete data.title;
+      else data.title = t;
+    }
+  }
+
+  return data;
+}
+
+/**
+ * Strip fields an LLM may have hallucinated as Chinese garbage or undefined
+ * shape before the action item is written to DB. Idempotent — re-running
+ * returns an equivalent normalized pack.
+ */
+export function normalizeGeneratedPack(
+  pack: GeneratedActionPack,
+): GeneratedActionPack {
+  return {
+    ...pack,
+    actions: pack.actions.map((a) => ({
+      ...a,
+      data: normalizeActionItemData(a.type, a.data as Record<string, unknown>),
+    })),
+  };
 }
 
 export async function confirmActionItem(
@@ -329,6 +436,10 @@ export async function confirmActionItem(
   const visit = item.actionPack.monitoringVisit;
   let savedEntityId: string | undefined;
   const fallbackFields: string[] = [];
+  // Normalized view of `data` we'll persist back to actionItem.data so the row
+  // never re-exposes the original dirty LLM values (e.g. "dueDate":"补齐").
+  // The persistence happens after the switch, keyed by type.
+  const normalized = { ...data };
 
   switch (item.type) {
     case 'MONITORING_VISIT_RECORD': {
@@ -337,8 +448,18 @@ export async function confirmActionItem(
       // Defensive: skip invalid datetime strings so Prisma never sees Invalid Date.
       const actualStartTime = parseOptionalDate(data.actualStartTime);
       const actualEndTime = parseOptionalDate(data.actualEndTime);
-      if (data.actualStartTime && !actualStartTime) fallbackFields.push('actualStartTime');
-      if (data.actualEndTime && !actualEndTime) fallbackFields.push('actualEndTime');
+      if (data.actualStartTime && !actualStartTime) {
+        fallbackFields.push('actualStartTime');
+        delete normalized.actualStartTime;
+      } else if (actualStartTime) {
+        normalized.actualStartTime = actualStartTime.toISOString();
+      }
+      if (data.actualEndTime && !actualEndTime) {
+        fallbackFields.push('actualEndTime');
+        delete normalized.actualEndTime;
+      } else if (actualEndTime) {
+        normalized.actualEndTime = actualEndTime.toISOString();
+      }
       await prisma.monitoringVisit.update({
         where: { id: visit.id },
         data: {
@@ -375,7 +496,14 @@ export async function confirmActionItem(
       const parsedDate = parseOptionalDate(data.date);
       const hoursDate =
         parsedDate ?? visit.actualStartTime ?? visit.actualEndTime ?? visit.plannedDate;
-      if (!parsedDate) fallbackFields.push('date');
+      if (!parsedDate) {
+        fallbackFields.push('date');
+        delete normalized.date;
+      } else {
+        normalized.date = hoursDate.toISOString().split('T')[0];
+      }
+      normalized.workType = (data.workType as string) || 'ON_SITE_MONITORING';
+      normalized.durationHours = inferredDuration;
       const hours = await prisma.hoursRecord.create({
         data: {
           userId,
@@ -383,7 +511,7 @@ export async function confirmActionItem(
           siteId: (data.siteId as string) || visit.siteId,
           monitoringVisitId: visit.id,
           date: hoursDate,
-          workType: (data.workType as string) || 'ON_SITE_MONITORING',
+          workType: normalized.workType as string,
           startTime: (data.startTime as string) ?? (data.start as string | undefined),
           endTime: (data.endTime as string) ?? (data.end as string | undefined),
           durationHours: inferredDuration,
@@ -402,8 +530,17 @@ export async function confirmActionItem(
       };
       // Defensive: invalid targetDate (e.g. Chinese text) must not block confirm.
       const targetDate = parseOptionalDate(data.targetDate);
-      if (data.targetDate && !targetDate) fallbackFields.push('targetDate');
+      if (data.targetDate && !targetDate) {
+        fallbackFields.push('targetDate');
+        delete normalized.targetDate;
+      } else if (targetDate) {
+        normalized.targetDate = targetDate.toISOString();
+      }
       const issueTitle = (data.title as string) || item.title;
+      const issueSeverity =
+        severityMap[(data.severity as string) || ''] || 'MEDIUM';
+      normalized.title = issueTitle;
+      normalized.severity = issueSeverity;
       const issue = await prisma.issue.create({
         data: {
           projectId: (data.projectId as string) || visit.projectId,
@@ -413,7 +550,7 @@ export async function confirmActionItem(
           title: issueTitle,
           description: (data.description as string) || item.description || item.title,
           category: (data.category as string) || 'OTHER',
-          severity: severityMap[(data.severity as string) || ''] || 'MEDIUM',
+          severity: issueSeverity,
           subjectId: data.subjectId as string | undefined,
           responsiblePerson: data.responsiblePerson as string | undefined,
           targetDate,
@@ -447,7 +584,12 @@ export async function confirmActionItem(
       // Defensive: invalid dueDate (e.g. "补齐") → undefined (DB allows null).
       // Does not block confirm; UI may show empty due label.
       const dueDate = parseOptionalDate(data.dueDate);
-      if (data.dueDate && !dueDate) fallbackFields.push('dueDate');
+      if (data.dueDate && !dueDate) {
+        fallbackFields.push('dueDate');
+        delete normalized.dueDate;
+      } else if (dueDate) {
+        normalized.dueDate = dueDate.toISOString();
+      }
       const todo = await prisma.todo.create({
         data: {
           userId,
@@ -509,6 +651,8 @@ export async function confirmActionItem(
                 status: 'DRAFT',
               },
             ];
+      normalized.title = title;
+      normalized.sections = safeSections;
       await prisma.reportDraft.upsert({
         where: { monitoringVisitId: visit.id },
         create: {
@@ -529,14 +673,25 @@ export async function confirmActionItem(
       // Defensive: invalid/missing dueDate → today + 7 days placeholder.
       const parsedFollowUpDue = parseOptionalDate(data.dueDate);
       const followUpDue = parsedFollowUpDue ?? new Date(Date.now() + 7 * 86400000);
-      if (!parsedFollowUpDue) fallbackFields.push('dueDate');
+      if (!parsedFollowUpDue) {
+        fallbackFields.push('dueDate');
+        normalized.dueDate = followUpDue.toISOString().split('T')[0];
+      } else {
+        normalized.dueDate = parsedFollowUpDue.toISOString().split('T')[0];
+      }
+      const followUpItem = (data.item as string | undefined) || item.title;
+      const followUpPerson =
+        (data.responsiblePerson as string | undefined) || '（待指定）';
       if (!(data.item as string | undefined)) fallbackFields.push('item');
-      if (!(data.responsiblePerson as string | undefined)) fallbackFields.push('responsiblePerson');
+      if (!(data.responsiblePerson as string | undefined))
+        fallbackFields.push('responsiblePerson');
+      normalized.item = followUpItem;
+      normalized.responsiblePerson = followUpPerson;
       const followUp = await prisma.followUpItem.create({
         data: {
           monitoringVisitId: visit.id,
-          item: (data.item as string) || item.title,
-          responsiblePerson: (data.responsiblePerson as string) || '（待指定）',
+          item: followUpItem,
+          responsiblePerson: followUpPerson,
           dueDate: followUpDue,
           requiredEvidence: data.requiredEvidence as string | undefined,
           relatedIssueTitle: data.relatedIssueTitle as string | undefined,
@@ -558,7 +713,7 @@ export async function confirmActionItem(
     where: { id: itemId },
     data: {
       status: 'CONFIRMED',
-      data: JSON.stringify(data),
+      data: JSON.stringify(normalized),
       confirmedAt: new Date(),
       savedEntityId,
     },

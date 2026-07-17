@@ -5,6 +5,7 @@ import type {
   ActionPackSummary,
   MonitoringVisitType,
 } from '@clinical/domain';
+import { normalizeGeneratedPack } from './action-pack.js';
 
 export interface AiContext {
   projectId: string;
@@ -473,7 +474,7 @@ export async function generateActionPack(ctx: AiContext): Promise<GeneratedActio
   const client = getOpenAIClient();
 
   if (!client) {
-    return parseWithRules(ctx, combinedText);
+    return normalizeGeneratedPack(parseWithRules(ctx, combinedText));
   }
 
   try {
@@ -518,9 +519,11 @@ export async function generateActionPack(ctx: AiContext): Promise<GeneratedActio
     parsed.summary.totalActions = parsed.actions.length;
     parsed.summary.pendingConfirm = parsed.actions.length;
 
-    return parsed;
+    // Strip LLM garbage (invalid dates, junk severity, non-array sections) so
+    // confirm-time code never has to guard against the same shapes again.
+    return normalizeGeneratedPack(parsed);
   } catch (err) {
     console.warn('AI generation failed, falling back to rules:', err);
-    return parseWithRules(ctx, combinedText);
+    return normalizeGeneratedPack(parseWithRules(ctx, combinedText));
   }
 }

@@ -135,6 +135,12 @@ describe('confirmActionItem — dirty LLM fields', () => {
     expect(audit).toBeTruthy();
     const payload = JSON.parse(audit!.payload || '{}') as { fallbackFields?: string[] };
     expect(payload.fallbackFields).toContain('dueDate');
+
+    // Confirm-time normalization: the original dirty "补齐" must not survive.
+    const refreshed = await prisma.actionItem.findUnique({ where: { id: item!.id } });
+    const persisted = JSON.parse(refreshed!.data || '{}') as Record<string, unknown>;
+    expect(persisted).not.toHaveProperty('dueDate');
+    expect(persisted.title).toBe('补齐 03 号签字');
   });
 
   it('HOURS: invalid date → confirm OK, falls back to actualStart/plannedDate', async () => {

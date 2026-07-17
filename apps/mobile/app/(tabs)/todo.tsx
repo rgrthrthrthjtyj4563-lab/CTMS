@@ -121,7 +121,7 @@ export default function TodoScreen() {
                   {t.project ? <Text style={styles.itemProject}>{t.project}</Text> : null}
                   <View style={styles.meta}>
                     <Text style={[styles.due, { color: dueColor(t.days, t.urgent) }]}>
-                      截止 {t.due || '—'}
+                      截止 {t.due || '待定'}
                       {t.urgent ? ' · 紧急' : t.days <= 4 ? ' · 临近' : ''}
                     </Text>
                     <Text style={styles.source}>来自 {t.source}</Text>
