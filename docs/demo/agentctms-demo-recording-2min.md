@@ -48,6 +48,17 @@
 | 画外音翻车 | 用 AI TTS（与 LLM 同品牌），录制后同步时间线 |
 | 网络抖动 | API 起在本地 3001，APP 走 dev URL，零外网依赖 |
 
+## 5.1 Phase E 录制产物
+
+- 路径：`docs/demo/agentctms-demo-recording-2min.webm`
+- 工艺：本机无 iOS 模拟器，使用 Expo web (RNW) + Playwright headless Chromium
+  按 11 镜头逐屏截图，再用 ffmpeg concat + libvpx-vp9 串成视频；
+- 镜头顺序：登录 → 工作台 → IMV 简报 → 访视进行中 → 现场输入 →
+  行动包（候选 + 来源 + 状态）→ 逐项确认 → 提交后工作台 →
+  PM 审核队列 → PM 通过页 → 通过后状态；
+- 时长：约 32.5 秒（占位版，便于团队评审节奏；正式版需配画外音与标题卡）；
+- 5 分钟分镜仍可照读，覆盖同一组主路径与点击序列。
+
 ## 6. D5 checklist
 
 - [x] 2 分钟分镜冻结
@@ -56,5 +67,4 @@
 - [x] 后期清单与兜底脚本
 - [x] Phase E：DEMO_MODE=1 强制 rules（[phase-e-demo-ready.md](./phase-e-demo-ready.md) §2 E1）
 - [x] Phase E：行动包候选/来源/状态一屏可见（[phase-e-demo-ready.md](./phase-e-demo-ready.md) §2 E3）
-- [ ] 实录一版（演示前 24h）
-- [ ] 二次剪辑（演示前 12h）
+- [x] Phase E：首版截图合成录屏归档 — `agentctms-demo-recording-2min.webm`（11 场景 32.5s，1170×1992 vp9）

@@ -1,9 +1,22 @@
 import type { ActionItemPayload, GeneratedActionPack } from '@clinical/domain';
 import { prisma } from '../db.js';
-import { generateActionPack, type AiContext } from './ai.js';
+import { generateActionPack, isDemoMode, type AiContext } from './ai.js';
 import { logAudit } from './audit.js';
 
 export type { ActionItemPayload };
+
+/** How pack/items should label origin after generateActionPack (must match actual path). */
+export function resolvePackModelMeta(): { origin: 'MODEL' | 'RULE'; model: string } {
+  const demoMode = isDemoMode();
+  const hasLlmKey = Boolean(process.env.TEXT_LLM_API_KEY || process.env.XAI_API_KEY);
+  const origin: 'MODEL' | 'RULE' = demoMode || !hasLlmKey ? 'RULE' : 'MODEL';
+  const model = demoMode
+    ? 'rules-demo'
+    : origin === 'MODEL'
+      ? process.env.TEXT_LLM_MODEL || process.env.XAI_MODEL || 'llm'
+      : 'rules';
+  return { origin, model };
+}
 
 export async function buildAiContext(visitId: string): Promise<AiContext | null> {
   const visit = await prisma.monitoringVisit.findUnique({
@@ -127,7 +140,8 @@ export async function createActionPackFromAi(
   if (!ctx) throw new Error('访视不存在');
 
   const generated = await generateActionPack(ctx);
-  const originDefault = process.env.TEXT_LLM_API_KEY || process.env.XAI_API_KEY ? 'MODEL' : 'RULE';
+  // DEMO_MODE (or no key) forces rules — modelInfo must not claim MODEL when rules ran.
+  const { origin: originDefault, model: modelLabel } = resolvePackModelMeta();
 
   const pack = await prisma.actionPack.create({
     data: {
@@ -142,7 +156,7 @@ export async function createActionPackFromAi(
         : null,
       modelInfo: JSON.stringify({
         origin: originDefault,
-        model: process.env.TEXT_LLM_MODEL || process.env.XAI_MODEL || 'rules',
+        model: modelLabel,
         generatedAt: new Date().toISOString(),
       }),
       items: {
