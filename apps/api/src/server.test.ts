@@ -425,6 +425,19 @@ describe('AI Clinical Operations API - IMV workflow', () => {
     });
     expect(returnRes.statusCode).toBe(200);
     expect(returnRes.json().visitStatus).toBe('PM_RETURNED');
+
+    // Subtitle on CRA workbench must surface the PM comment so a one-screen
+    // demo can show "what was returned and why" without leaving home.
+    const wb = await app.inject({
+      method: 'GET',
+      url: '/api/workbench',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(wb.statusCode).toBe(200);
+    const returned = (wb.json().highlights as Array<{ type: string; subtitle?: string }>) ?? [];
+    const ret = returned.find((h) => h.type === 'PM_RETURN');
+    expect(ret).toBeDefined();
+    expect(ret!.subtitle).toContain('请补充药物温度记录说明');
   });
 
   it('data persists after reload', async () => {

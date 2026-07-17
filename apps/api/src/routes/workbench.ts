@@ -136,7 +136,21 @@ export async function workbenchRoutes(app: FastifyInstance) {
         ...visitScope,
         status: 'PM_RETURNED',
       },
-      include: { project: true, site: true },
+      include: {
+        project: true,
+        site: true,
+        actionPacks: {
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+          include: {
+            reviews: {
+              where: { decision: 'RETURN' },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+        },
+      },
       take: 3,
     });
 
@@ -197,11 +211,13 @@ export async function workbenchRoutes(app: FastifyInstance) {
     }
 
     for (const ret of pmReturns) {
+      const latestReturn = ret.actionPacks[0]?.reviews[0];
+      const returnComment = latestReturn?.comment ?? 'PM 退回，请查看详情';
       highlights.push({
         id: ret.id,
         type: 'PM_RETURN',
         title: `PM退回 - ${ret.site.name}`,
-        subtitle: ret.project.code,
+        subtitle: `${ret.project.code} · ${returnComment}`,
         priority: 1,
       });
     }

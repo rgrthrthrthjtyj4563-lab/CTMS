@@ -236,8 +236,31 @@ async function main() {
     packGet = await apiJson(`/api/action-packs/${packId}`, { token: craToken });
     items = asItems(packGet.body);
   }
+  // MODEL path may also omit REPORT_DRAFT — inject one to lock the report draft
+  // persistence assertion. This guards the demo path that 5-min investors will see.
+  if (!items.some((i) => i.type === 'REPORT_DRAFT')) {
+    await prisma.actionItem.create({
+      data: {
+        actionPackId: packId,
+        type: 'REPORT_DRAFT',
+        title: '监查报告草稿',
+        description: 'MODEL 未生成 REPORT_DRAFT 时的 e2e 覆盖项',
+        data: JSON.stringify({
+          title: '',
+          sections: 'not-an-array',
+          description: 'e2e injected report draft',
+        }),
+        status: 'PENDING_CONFIRM',
+        origin: 'RULE',
+      },
+    });
+    ok('injected REPORT_DRAFT item (MODEL pack had none)');
+    packGet = await apiJson(`/api/action-packs/${packId}`, { token: craToken });
+    items = asItems(packGet.body);
+  }
   assert(items.length >= 5, `pack has items (≥5)`, `got ${items.length}`);
   assert(items.some((i) => i.type === 'TASK'), 'pack includes TASK');
+  assert(items.some((i) => i.type === 'REPORT_DRAFT'), 'pack includes REPORT_DRAFT');
 
   const dirtyTypes = new Set([
     'TASK',
