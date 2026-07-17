@@ -34,12 +34,26 @@ export async function auditRoutes(app: FastifyInstance) {
       packs.map((p) => getAuditTrail('ActionPack', p.id)),
     );
 
+    // ActionItem confirms (incl. ACTION_CONFIRMED_FALLBACK) are the bulk of CRA work
+    const packIds = packs.map((p) => p.id);
+    const items =
+      packIds.length === 0
+        ? []
+        : await prisma.actionItem.findMany({
+            where: { actionPackId: { in: packIds } },
+            select: { id: true },
+          });
+    const itemEvents = await Promise.all(
+      items.map((i) => getAuditTrail('ActionItem', i.id)),
+    );
+
     return {
       visitId,
       events: [
         ...visitEvents,
         ...inputEvents.flat(),
         ...packEvents.flat(),
+        ...itemEvents.flat(),
       ].sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       ),

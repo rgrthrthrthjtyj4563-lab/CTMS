@@ -13,6 +13,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "smoke": "pnpm --filter @clinical/mobile smoke",
+    "test:e2e:imv": "pnpm --filter @clinical/api test:e2e:imv",
     "db:generate": "pnpm --filter @clinical/api db:generate",
     "db:migrate": "pnpm --filter @clinical/api db:migrate",
     "db:seed": "pnpm --filter @clinical/api db:seed",
