@@ -1,831 +1,376 @@
-// AIC-DCT Prisma Schema v0
-//
-// This is the Phase 0 schema. It must remain consistent with the @aic-dct/domain
-// enums (Role, SubjectStatus, VisitStatus, ConsentStatus, etc.). Whenever an enum
-// is added to enums.ts, add a matching Prisma enum here.
-//
-// All identifiers use cuid. Sensitive subject identity is split into a separate
-// model so default list queries cannot accidentally return PII.
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
-// ─── Identity & Access ───────────────────────────────────────
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-enum Role {
-  SponsorAdmin
-  CROPM
-  SitePI
-  SiteCRC
-  CRA
-  Auditor
-  RegulatorReadOnly
-  Subject
-  ProviderLogistics
-  ProviderNurse
-  SystemAdmin
+  users    User[]
+  projects Project[]
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  displayName  String
-  phone        String?
-  organization String?
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default(cuid())
+  phone          String   @unique
+  passwordHash   String
+  name           String
+  role           String   // CRA, PM, QA, ADMIN
+  organizationId String
+  preferredProjectId String?
+  preferredSiteId    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  roleAssignments          RoleAssignment[]
-  ownedSubjects            Subject[]               @relation("SubjectOwner")
-  consentSignatures        SignatureRecord[]
-  auditEvents              AuditEvent[]            @relation("AuditActor")
-  visitsCreated            Visit[]                 @relation("VisitCreatedBy")
-  visitSubmissions         Visit[]                 @relation("VisitSubmittedBy")
-  visitClosures            Visit[]                 @relation("VisitClosedBy")
-  questionnaireSubmissions QuestionnaireResponse[] @relation("QuestionnaireSubmittedBy")
-  boundSubject             Subject?                @relation("SubjectAccount")
-  symptomReports           SymptomReport[]         @relation("SymptomReportSubmittedBy")
-  safetyDrafts             SafetyEvent[]
-  safetyFollowUps          SafetyFollowUp[]
-  riskAssignments          RiskSignal[]            @relation("RiskOwner")
-  riskHandling             RiskHandlingRecord[]
-  exports                  ExportRecord[]
-  documents                Document[]
-  documentVersions         DocumentVersion[]
-  aiOutputs                AIOutput[]
-  aiCallLogs               AICallLog[]
-  assistedEntriesRecorded  AssistedEntry[]         @relation("AssistedEntryRecorder")
-  assistedEntryCorrections AssistedEntryCorrection[]
+  organization Organization @relation(fields: [organizationId], references: [id])
+  assignments  UserAssignment[]
+  sessions     Session[]
+
+  monitoringVisitsAsCra MonitoringVisit[] @relation("CraVisits")
+  inputs                VisitInput[]
+  actionPacks           ActionPack[]
+  hoursRecords          HoursRecord[]
+  issuesReported        Issue[]           @relation("IssueReporter")
+  todos                 Todo[]
+  auditEvents           AuditEvent[]
+  reviews               Review[]
 }
 
-model RoleAssignment {
-  id         String   @id @default(cuid())
-  userId     String
-  projectId  String?
-  siteId     String?
-  role       Role
-  assignedAt DateTime @default(now())
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
-  user    User     @relation(fields: [userId], references: [id])
-  project Project? @relation(fields: [projectId], references: [id])
-  site    Site?    @relation(fields: [siteId], references: [id])
-
-  @@unique([userId, projectId, siteId, role])
-  @@index([userId])
-  @@index([projectId])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
-
-// ─── Project / Protocol ──────────────────────────────────────
 
 model Project {
-  id               String    @id @default(cuid())
-  code             String    @unique
-  name             String
-  sponsor          String
-  therapeuticArea  String
-  phase            String // "I" | "II" | "III" | "IV"
-  description      String?
-  startDate        DateTime
-  estimatedEndDate DateTime?
-  archivedAt       DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id             String   @id @default(cuid())
+  code           String
+  name           String
+  organizationId String
+  status         String   @default("ACTIVE")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  sites                  Site[]
-  roleAssignments        RoleAssignment[]
-  subjects               Subject[]
-  protocolVersions       ProtocolVersion[]
-  consentDocuments       ConsentDocument[]
-  questionnaireTemplates QuestionnaireTemplate[]
-  safetyEvents           SafetyEvent[]
-  riskSignals            RiskSignal[]
-  drugShipments          DrugShipment[]
-  sampleTransfers        SampleTransfer[]
-  reports                ReportDraft[]
-  exports                ExportRecord[]
-  documents              Document[]
-  aiConfigs              AIConfig[]
-  aiOutputs              AIOutput[]
-  auditEvents            AuditEvent[]
-  symptomReports         SymptomReport[]
-  assistedEntries        AssistedEntry[]
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  sites            Site[]
+  assignments      UserAssignment[]
+  monitoringVisits MonitoringVisit[]
+  hoursRecords     HoursRecord[]
+  issues           Issue[]
 }
 
 model Site {
-  id                          String   @id @default(cuid())
-  projectId                   String
-  code                        String
-  name                        String
-  city                        String?
-  region                      String?
-  principalInvestigatorUserId String?
-  createdAt                   DateTime @default(now())
-  updatedAt                   DateTime @updatedAt
-
-  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  subjects        Subject[]
-  roleAssignments RoleAssignment[]
-  drugShipments   DrugShipment[]
-
-  @@unique([projectId, code])
-}
-
-// ─── Subject & Sensitive Identity ────────────────────────────
-
-enum SubjectStatus {
-  PreScreening
-  Consenting
-  Screening
-  Enrolled
-  Active
-  Completed
-  Withdrawn
-  ScreenFailed
-}
-
-model Subject {
-  id             String        @id @default(cuid())
-  projectId      String
-  siteId         String
-  status         SubjectStatus
-  enrollmentDate DateTime?
-  withdrawnDate  DateTime?
-  ownerUserId    String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  // Masked identity (safe by default)
-  subjectCode String
-  initials    String?
-  yearOfBirth Int?
-  ageBand     String?
-  sex         String?
-  city        String?
-
-  project Project @relation(fields: [projectId], references: [id])
-  site    Site    @relation(fields: [siteId], references: [id])
-  owner   User?   @relation("SubjectOwner", fields: [ownerUserId], references: [id])
-
-  sensitiveIdentity      SubjectSensitiveIdentity?
-  consentTasks           ConsentTask[]
-  visits                 Visit[]
-  questionnaireResponses QuestionnaireResponse[]
-  safetyEvents           SafetyEvent[]
-  riskSignals            RiskSignal[]
-  drugShipments          DrugShipment[]
-  sampleTransfers        SampleTransfer[]
-  symptomReports         SymptomReport[]
-  assistedEntries        AssistedEntry[]
-  subjectUser            User?             @relation("SubjectAccount", fields: [subjectUserId], references: [id])
-  subjectUserId          String?           @unique
-
-  @@unique([projectId, subjectCode])
-  @@index([projectId, status])
-}
-
-model SubjectSensitiveIdentity {
-  subjectId          String    @id
-  fullName           String
-  nationalId         String
-  dateOfBirth        DateTime
-  phone              String
-  email              String
-  address            String
-  // Track who last unmasked (separate from raw access logs for compliance)
-  lastViewedByUserId String?
-  lastViewedAt       DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-
-  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  // Note: relation to User is intentionally a plain last-viewed reference,
-  // not a foreign key constraint — SubjectSensitiveIdentity → User is a
-  // many-to-one viewing log anchor only.
-}
-
-// ─── Protocol ────────────────────────────────────────────────
-
-enum ProtocolParseStatus {
-  Uploaded
-  Parsing
-  Parsed
-  ParseFailed
-  UnderReview
-  Effective
-  Superseded
-}
-
-model ProtocolVersion {
-  id            String              @id @default(cuid())
-  projectId     String
-  version       String
-  documentUrl   String
-  parseStatus   ProtocolParseStatus
-  effectiveFrom DateTime?
-  supersededAt  DateTime?
-  uploadedAt    DateTime            @default(now())
-
-  project      Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  parseResults AIProtocolParseResult[]
-
-  @@unique([projectId, version])
-}
-
-enum HumanConfirmationStatus {
-  Pending
-  Adopted
-  EditedAdopted
-  Rejected
-  NeedsInvestigatorConfirmation
-}
-
-model AIProtocolParseResult {
-  id                String                  @id @default(cuid())
-  protocolVersionId String
-  status            HumanConfirmationStatus @default(Pending)
-  fields            Json
-  confidence        Float
-  generatedAt       DateTime                @default(now())
-  confirmedByUserId String?
-  confirmedAt       DateTime?
-  notes             String?
-
-  protocolVersion ProtocolVersion @relation(fields: [protocolVersionId], references: [id], onDelete: Cascade)
-  aiOutputId      String?
-  aiOutput        AIOutput?       @relation(fields: [aiOutputId], references: [id])
-}
-
-// ─── Consent ─────────────────────────────────────────────────
-
-model ConsentDocument {
-  id            String   @id @default(cuid())
-  projectId     String
-  version       String
-  title         String
-  documentUrl   String
-  effectiveFrom DateTime
-  createdAt     DateTime @default(now())
-
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  consentTasks ConsentTask[]
-
-  @@unique([projectId, version])
-}
-
-enum ConsentStatus {
-  NotStarted
-  Reading
-  ComprehensionPending
-  SubjectSigned
-  InvestigatorSigned
-  Completed
-  ReConsentRequired
-  Withdrawn
-}
-
-model ConsentTask {
-  id                 String        @id @default(cuid())
-  subjectId          String
-  consentDocumentId  String
-  status             ConsentStatus
-  startedAt          DateTime?
-  comprehensionScore Float?
-  completedAt        DateTime?
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
-
-  subject    Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  document   ConsentDocument   @relation(fields: [consentDocumentId], references: [id])
-  signatures SignatureRecord[]
-}
-
-model SignatureRecord {
-  id               String   @id @default(cuid())
-  consentTaskId    String
-  signerUserId     String
-  signerRole       String // Subject / Investigator / Witness
-  signedAt         DateTime
-  signatureMethod  String // ESign / WetInk / Biometric
-  signaturePayload String
-  ipAddress        String?
-
-  consentTask ConsentTask @relation(fields: [consentTaskId], references: [id], onDelete: Cascade)
-  signer      User        @relation(fields: [signerUserId], references: [id])
-}
-
-// ─── Visit ───────────────────────────────────────────────────
-
-enum VisitStatus {
-  NotStarted
-  Scheduled
-  InProgress
-  SubmittedForPI
-  Completed
-  Missed
-  OutOfWindow
-  Deviation
-}
-
-model Visit {
-  id                String      @id @default(cuid())
-  subjectId         String
-  visitCode         String
-  scheduledAt       DateTime
-  windowStart       DateTime
-  windowEnd         DateTime
-  status            VisitStatus
-  createdByUserId   String?
-  submittedByUserId String?
-  closedByUserId    String?
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
-
-  subject     Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  createdBy   User?   @relation("VisitCreatedBy", fields: [createdByUserId], references: [id])
-  submittedBy User?   @relation("VisitSubmittedBy", fields: [submittedByUserId], references: [id])
-  closedBy    User?   @relation("VisitClosedBy", fields: [closedByUserId], references: [id])
-
-  tasks                  VisitTask[]
-  remoteSession          RemoteVisitRecord?
-  questionnaireResponses QuestionnaireResponse[]
-}
-
-model VisitTask {
-  id          String    @id @default(cuid())
-  visitId     String
-  code        String
-  description String
-  completed   Boolean   @default(false)
-  completedAt DateTime?
-
-  visit Visit @relation(fields: [visitId], references: [id], onDelete: Cascade)
-}
-
-model RemoteVisitRecord {
-  id             String    @id @default(cuid())
-  visitId        String    @unique
-  startedAt      DateTime
-  endedAt        DateTime?
-  videoProvider  String?
-  videoSessionId String?
-  notes          String?
-
-  visit Visit @relation(fields: [visitId], references: [id], onDelete: Cascade)
-}
-
-// ─── Questionnaire (ePRO/eCOA) ──────────────────────────────
-
-enum QuestionnaireStatus {
-  Scheduled
-  InProgress
-  Submitted
-  Missed
-  Late
-  Reviewed
-}
-
-enum DataEntryChannel {
-  SubjectSelfReport
-  StaffEntry
-  AssistedEntry
-}
-
-enum SymptomReportStatus {
-  Draft
-  Submitted
-}
-
-enum AssistedCollectionChannel {
-  Phone
-  InPerson
-  Video
-  HomeVisit
-  Other
-}
-
-model QuestionnaireTemplate {
   id        String   @id @default(cuid())
   projectId String
   code      String
   name      String
-  version   String
-  schema    Json
+  city      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project          Project           @relation(fields: [projectId], references: [id])
+  assignments      UserAssignment[]
+  monitoringVisits MonitoringVisit[]
+  hoursRecords     HoursRecord[]
+  issues           Issue[]
+}
+
+model UserAssignment {
+  id        String   @id @default(cuid())
+  userId    String
+  projectId String
+  siteId    String?
+  role      String
   createdAt DateTime @default(now())
 
-  project   Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  responses QuestionnaireResponse[]
-
-  @@unique([projectId, code, version])
-}
-
-model QuestionnaireResponse {
-  id                      String              @id @default(cuid())
-  questionnaireTemplateId String
-  subjectId               String
-  visitId                 String?
-  status                  QuestionnaireStatus
-  entryChannel            DataEntryChannel    @default(StaffEntry)
-  responses               Json
-  submittedByUserId       String?
-  submittedAt             DateTime?
-  reviewedByUserId        String?
-  reviewedAt              DateTime?
-  createdAt               DateTime            @default(now())
-  updatedAt               DateTime            @updatedAt
-
-  template    QuestionnaireTemplate @relation(fields: [questionnaireTemplateId], references: [id])
-  subject     Subject               @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  visit       Visit?                @relation(fields: [visitId], references: [id])
-  submittedBy   User?          @relation("QuestionnaireSubmittedBy", fields: [submittedByUserId], references: [id])
-  assistedEntry AssistedEntry?
-}
-
-model AssistedEntry {
-  id                      String                    @id @default(cuid())
-  projectId               String
-  subjectId               String
-  recorderUserId          String
-  reason                  String
-  collectionChannel       AssistedCollectionChannel
-  instrumentType          String
-  questionnaireResponseId String                    @unique
-  templateId              String
-  templateCode            String
-  templateVersion         String
-  recordedAt              DateTime                  @default(now())
-  createdAt               DateTime                  @default(now())
-  updatedAt               DateTime                  @updatedAt
-
-  project               Project                   @relation(fields: [projectId], references: [id])
-  subject                 Subject                   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  recorder                User                      @relation("AssistedEntryRecorder", fields: [recorderUserId], references: [id])
-  questionnaireResponse   QuestionnaireResponse     @relation(fields: [questionnaireResponseId], references: [id], onDelete: Cascade)
-  corrections             AssistedEntryCorrection[]
-
-  @@index([projectId, recordedAt])
-  @@index([subjectId])
-}
-
-model AssistedEntryCorrection {
-  id              String   @id @default(cuid())
-  assistedEntryId String
-  actorUserId     String
-  reason          String
-  beforeValue     Json
-  afterValue      Json
-  correctedAt     DateTime @default(now())
-
-  assistedEntry AssistedEntry @relation(fields: [assistedEntryId], references: [id], onDelete: Cascade)
-  actor         User          @relation(fields: [actorUserId], references: [id])
-}
-
-model SymptomReport {
-  id                String              @id @default(cuid())
-  subjectId         String
-  projectId         String
-  status            SymptomReportStatus
-  entryChannel      DataEntryChannel    @default(SubjectSelfReport)
-  discomfortType    String
-  onsetAt           DateTime
-  severity          RiskLevel
-  soughtMedicalCare Boolean             @default(false)
-  hospitalized      Boolean             @default(false)
-  stoppedMedication Boolean             @default(false)
-  description       String
-  submittedByUserId String?
-  submittedAt       DateTime?
-  riskSignalId      String?
-  safetyEventId     String?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-
-  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  project     Project  @relation(fields: [projectId], references: [id])
-  submittedBy User?    @relation("SymptomReportSubmittedBy", fields: [submittedByUserId], references: [id])
-
-  @@index([projectId, status])
-  @@index([subjectId, status])
-}
-
-// ─── Safety ──────────────────────────────────────────────────
-
-enum SafetyEventStatus {
-  Draft
-  InvestigatorReview
-  ConfirmedAE
-  ConfirmedSAE
-  Reported
-  FollowUp
-  Closed
-}
-
-enum RiskLevel {
-  Low
-  Medium
-  High
-  Critical
-}
-
-model SafetyEvent {
-  id              String            @id @default(cuid())
-  subjectId       String
-  projectId       String
-  onsetAt         DateTime
-  description     String
-  severity        RiskLevel
-  status          SafetyEventStatus
-  isSerious       Boolean           @default(false)
-  aiSuggested     Boolean           @default(false)
-  createdByUserId String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-
-  subject   Subject          @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  project   Project          @relation(fields: [projectId], references: [id])
-  createdBy User?            @relation(fields: [createdByUserId], references: [id])
-  followUps SafetyFollowUp[]
-}
-
-model SafetyFollowUp {
-  id               String   @id @default(cuid())
-  safetyEventId    String
-  followUpAt       DateTime
-  outcome          String
-  recordedByUserId String
-  createdAt        DateTime @default(now())
-
-  safetyEvent SafetyEvent @relation(fields: [safetyEventId], references: [id], onDelete: Cascade)
-  recordedBy  User        @relation(fields: [recordedByUserId], references: [id])
-}
-
-// ─── Risk ────────────────────────────────────────────────────
-
-enum RiskStatus {
-  Open
-  Assigned
-  InProgress
-  PendingInvestigator
-  Resolved
-  Closed
-  Rejected
-}
-
-model RiskSignal {
-  id          String     @id @default(cuid())
-  projectId   String
-  level       RiskLevel
-  type        String
-  objectType  String
-  objectId    String
-  subjectId   String?
-  trigger     String
-  suggestion  String?
-  ownerUserId String?
-  deadline    DateTime?
-  status      RiskStatus
-  aiOutputId  String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-
-  project  Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner    User?                @relation("RiskOwner", fields: [ownerUserId], references: [id])
-  aiOutput AIOutput?            @relation(fields: [aiOutputId], references: [id])
-  handling RiskHandlingRecord[]
-  subject  Subject?             @relation(fields: [subjectId], references: [id])
-
-  @@index([projectId, status])
-  @@index([level, status])
-  @@index([objectType, objectId])
-}
-
-model RiskHandlingRecord {
-  id           String     @id @default(cuid())
-  riskSignalId String
-  actorUserId  String
-  action       String
-  fromStatus   RiskStatus
-  toStatus     RiskStatus
-  reason       String?
-  at           DateTime   @default(now())
-
-  riskSignal RiskSignal @relation(fields: [riskSignalId], references: [id], onDelete: Cascade)
-  actor      User       @relation(fields: [actorUserId], references: [id])
-}
-
-// ─── Drug / Sample ───────────────────────────────────────────
-
-model DrugShipment {
-  id             String    @id @default(cuid())
-  projectId      String
-  siteId         String
-  subjectId      String?
-  batchNumber    String
-  dispatchedAt   DateTime
-  receivedAt     DateTime?
-  temperatureLog Json
-
-  project Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  site    Site     @relation(fields: [siteId], references: [id])
-  subject Subject? @relation(fields: [subjectId], references: [id])
-
-  @@index([projectId, siteId])
-}
-
-model SampleTransfer {
-  id            String    @id @default(cuid())
-  projectId     String
-  subjectId     String
-  visitId       String?
-  sampleType    String
-  status        String // Pending / Collected / InTransit / Received / Rejected
-  collectedAt   DateTime?
-  transferredAt DateTime?
-
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  site    Site?   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId, siteId])
 }
 
-// ─── Report ──────────────────────────────────────────────────
+model MonitoringVisit {
+  id              String    @id @default(cuid())
+  projectId       String
+  siteId          String
+  craId           String
+  type            String    // SIV, IMV, COV
+  status          String    @default("PLANNED")
+  plannedDate     DateTime
+  actualStartTime DateTime?
+  actualEndTime   DateTime?
+  subjectsReviewed Int?
+  workSummary     String?
+  sitePersonnel   String?   // JSON array
+  findings        String?   // JSON array
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-enum ReportStatus {
-  Generating
-  Draft
-  UnderReview
-  Confirmed
-  Exported
-  Failed
+  project      Project        @relation(fields: [projectId], references: [id])
+  site         Site           @relation(fields: [siteId], references: [id])
+  cra          User           @relation("CraVisits", fields: [craId], references: [id])
+  inputs       VisitInput[]
+  activities   VisitActivity[]
+  attachments  Attachment[]
+  actionPacks  ActionPack[]
+  hoursRecords HoursRecord[]
+  issues       Issue[]
+  todos        Todo[]
+  reportDraft  ReportDraft?
+  followUpItems FollowUpItem[]
+}
+
+model VisitInput {
+  id                String   @id @default(cuid())
+  monitoringVisitId String
+  userId            String
+  type              String   // TEXT, VOICE, IMAGE, FILE
+  content           String
+  transcript        String?
+  status            String   @default("COMPLETED") // COMPLETED, EDITED, VOIDED
+  clientInputId     String?  // for offline sync
+  syncStatus        String   @default("SYNCED")
+  version           Int      @default(1)
+  originalContent   String?  // first version content before any edit
+  editReason        String?
+  isVoided          Boolean  @default(false)
+  voidedAt          DateTime?
+  voidReason        String?
+  voidedById        String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  monitoringVisit MonitoringVisit @relation(fields: [monitoringVisitId], references: [id], onDelete: Cascade)
+  user            User            @relation(fields: [userId], references: [id])
+}
+
+/// Structured visit activity checklist (replaces free-form "记录节点")
+model VisitActivity {
+  id                String   @id @default(cuid())
+  monitoringVisitId String
+  activityType      String   // e.g. SOURCE_DATA_REVIEW, DRUG_ACCOUNTABILITY
+  title             String
+  status            String   @default("PENDING") // PENDING, DONE, PARTIAL, NA
+  note              String?
+  sortOrder         Int      @default(0)
+  relatedIssueIds   String?  // JSON array
+  evidenceIds       String?  // JSON array of attachment ids
+  sourceInputId     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  monitoringVisit MonitoringVisit @relation(fields: [monitoringVisitId], references: [id], onDelete: Cascade)
+
+  @@index([monitoringVisitId])
+}
+
+model Attachment {
+  id                String   @id @default(cuid())
+  monitoringVisitId String?
+  userId            String?
+  fileName          String
+  mimeType          String
+  filePath          String
+  fileSize          Int
+  fileType          String?
+  sensitiveFlag     Boolean  @default(false)
+  confirmed         Boolean  @default(false)
+  clientAttachmentId String?
+  syncStatus        String   @default("SYNCED")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  monitoringVisit MonitoringVisit? @relation(fields: [monitoringVisitId], references: [id], onDelete: SetNull)
+}
+
+model ActionPack {
+  id                String   @id @default(cuid())
+  monitoringVisitId String
+  userId            String
+  status            String   @default("DRAFT")
+  summary           String?  // JSON
+  warnings          String?  // JSON array
+  followUpQuestions String?  // JSON array
+  modelInfo         String?  // JSON: { origin, model, generatedAt }
+  isActive          Boolean  @default(true) // only one active pack per visit
+  submittedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  monitoringVisit MonitoringVisit @relation(fields: [monitoringVisitId], references: [id], onDelete: Cascade)
+  user            User            @relation(fields: [userId], references: [id])
+  items           ActionItem[]
+  reviews         Review[]
+
+  @@index([monitoringVisitId, isActive])
+}
+
+model ActionItem {
+  id           String   @id @default(cuid())
+  actionPackId String
+  type         String
+  title        String
+  description  String?
+  data         String   // JSON
+  status       String   @default("SUGGESTED")
+  sourceIds    String?  // JSON: { inputIds, attachmentIds, sources[], origin }
+  origin       String   @default("RULE") // MODEL | RULE | MANUAL
+  requiresIndividualConfirm Boolean @default(false)
+  blockingReason String?
+  confirmedAt  DateTime?
+  savedEntityId String? // id of created HoursRecord, Issue, etc.
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  actionPack ActionPack @relation(fields: [actionPackId], references: [id], onDelete: Cascade)
+}
+
+model HoursRecord {
+  id                String   @id @default(cuid())
+  userId            String
+  projectId         String
+  siteId            String?
+  monitoringVisitId String?
+  date              DateTime
+  workType          String
+  startTime         String?
+  endTime           String?
+  durationHours     Float
+  description       String
+  status            String   @default("DRAFT_CANDIDATE")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id])
+  project         Project          @relation(fields: [projectId], references: [id])
+  site            Site?            @relation(fields: [siteId], references: [id])
+  monitoringVisit MonitoringVisit? @relation(fields: [monitoringVisitId], references: [id])
+}
+
+model Issue {
+  id                String   @id @default(cuid())
+  projectId         String
+  siteId            String
+  monitoringVisitId String?
+  reporterId        String
+  title             String
+  description       String
+  category          String
+  severity          String
+  subjectId         String?
+  responsiblePerson String?
+  targetDate        DateTime?
+  requiredEvidence  String?
+  status            String   @default("DRAFT_CANDIDATE")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project         Project          @relation(fields: [projectId], references: [id])
+  site            Site             @relation(fields: [siteId], references: [id])
+  monitoringVisit MonitoringVisit? @relation(fields: [monitoringVisitId], references: [id])
+  reporter        User             @relation("IssueReporter", fields: [reporterId], references: [id])
+  todos           Todo[]
+}
+
+model Todo {
+  id                String    @id @default(cuid())
+  userId            String
+  title             String
+  description       String?
+  group             String
+  status            String    @default("OPEN")
+  dueDate           DateTime?
+  sourceType        String?
+  sourceId          String?
+  projectId         String?
+  siteId            String?
+  monitoringVisitId String?
+  issueId           String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  completedAt       DateTime?
+
+  user            User             @relation(fields: [userId], references: [id])
+  monitoringVisit MonitoringVisit? @relation(fields: [monitoringVisitId], references: [id])
+  issue           Issue?           @relation(fields: [issueId], references: [id])
 }
 
 model ReportDraft {
-  id               String       @id @default(cuid())
-  projectId        String
-  type             String // Interim / Final / Safety / Custom
-  status           ReportStatus
-  sourceSnapshotId String?
-  generatedAt      DateTime     @default(now())
-  confirmedAt      DateTime?
-  exportedAt       DateTime?
+  id                String   @id @default(cuid())
+  monitoringVisitId String   @unique
+  title             String
+  sections          String   // JSON array
+  status            String   @default("DRAFT")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  monitoringVisit MonitoringVisit @relation(fields: [monitoringVisitId], references: [id], onDelete: Cascade)
 }
 
-model ExportRecord {
-  id               String   @id @default(cuid())
-  projectId        String
-  objectType       String
-  objectIds        Json
-  format           String
-  reason           String
-  exportedByUserId String
-  exportedAt       DateTime @default(now())
+model FollowUpItem {
+  id                String   @id @default(cuid())
+  monitoringVisitId String
+  item              String
+  responsiblePerson String
+  dueDate           DateTime
+  requiredEvidence  String?
+  relatedIssueTitle String?
+  suggestedWording  String?
+  status            String   @default("DRAFT")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  exportedBy User    @relation(fields: [exportedByUserId], references: [id])
+  monitoringVisit MonitoringVisit @relation(fields: [monitoringVisitId], references: [id], onDelete: Cascade)
 }
 
-// ─── Documents ───────────────────────────────────────────────
+model Review {
+  id           String   @id @default(cuid())
+  actionPackId String
+  reviewerId   String
+  decision     String   // APPROVE, RETURN, ESCALATE_QA
+  comment      String?
+  returnItems  String?  // JSON: specific items returned
+  createdAt    DateTime @default(now())
 
-model Document {
-  id               String   @id @default(cuid())
-  projectId        String
-  title            String
-  category         String
-  currentVersionId String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  project          Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  uploadedByUserId String?
-  uploadedBy       User?             @relation(fields: [uploadedByUserId], references: [id])
-  versions         DocumentVersion[]
-
-  @@unique([projectId, title])
+  actionPack ActionPack @relation(fields: [actionPackId], references: [id], onDelete: Cascade)
+  reviewer   User       @relation(fields: [reviewerId], references: [id])
 }
-
-model DocumentVersion {
-  id               String   @id @default(cuid())
-  documentId       String
-  version          String
-  fileUrl          String
-  sha256           String
-  uploadedByUserId String
-  uploadedAt       DateTime @default(now())
-
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  uploadedBy User     @relation(fields: [uploadedByUserId], references: [id])
-
-  @@unique([documentId, version])
-}
-
-// ─── AI Platform ────────────────────────────────────────────
-
-model AIConfig {
-  id          String   @id @default(cuid())
-  projectId   String?
-  provider    String
-  model       String
-  temperature Float    @default(0.2)
-  maxTokens   Int?
-  enabled     Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  project Project? @relation(fields: [projectId], references: [id])
-}
-
-model PromptTemplate {
-  id         String   @id @default(cuid())
-  code       String
-  version    String
-  body       String
-  variables  Json
-  outputKind String
-  createdAt  DateTime @default(now())
-
-  callLogs AICallLog[]
-  outputs  AIOutput[]
-
-  @@unique([code, version])
-}
-
-model AICallLog {
-  id               String    @id @default(cuid())
-  aiOutputId       String?
-  promptTemplateId String
-  model            String
-  inputHash        String
-  startedAt        DateTime
-  finishedAt       DateTime?
-  statusCode       Int?
-  errorMessage     String?
-
-  promptTemplate PromptTemplate @relation(fields: [promptTemplateId], references: [id])
-  aiOutput       AIOutput?      @relation(fields: [aiOutputId], references: [id])
-  User           User?          @relation(fields: [userId], references: [id])
-  userId         String?
-}
-
-model AIOutput {
-  id                String                  @id @default(cuid())
-  kind              String
-  projectId         String
-  subjectId         String?
-  payload           Json
-  confidence        Float
-  confidenceLevel   String // Low / Medium / High
-  status            HumanConfirmationStatus @default(Pending)
-  generatedAt       DateTime                @default(now())
-  confirmedByUserId String?
-  confirmedAt       DateTime?
-  notes             String?
-  rejectionReason   String?
-  promptTemplateId  String?
-  model             String
-  modelVersion      String
-  inputHash         String
-  knowledgeBaseRefs Json
-
-  project         Project                 @relation(fields: [projectId], references: [id])
-  promptTemplate  PromptTemplate?         @relation(fields: [promptTemplateId], references: [id])
-  confirmedBy     User?                   @relation(fields: [confirmedByUserId], references: [id])
-  protocolResults AIProtocolParseResult[]
-  riskSignals     RiskSignal[]
-  callLogs        AICallLog[]
-
-  @@index([projectId, status])
-  @@index([kind, status])
-}
-
-// ─── Audit ───────────────────────────────────────────────────
 
 model AuditEvent {
-  id          String   @id @default(cuid())
-  actorUserId String
-  actorRole   String
-  projectId   String
-  objectType  String
-  objectId    String
-  action      String
-  beforeValue Json?
-  afterValue  Json?
-  reason      String?
-  ipAddress   String?
-  userAgent   String?
-  device      String?
-  requestId   String?
-  timestamp   DateTime @default(now())
+  id         String   @id @default(cuid())
+  type       String
+  userId     String?
+  entityType String
+  entityId   String
+  payload    String?  // JSON
+  createdAt  DateTime @default(now())
 
-  actor   User    @relation("AuditActor", fields: [actorUserId], references: [id])
-  project Project @relation(fields: [projectId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
+}
 
-  @@index([projectId, timestamp])
-  @@index([objectType, objectId])
-  @@index([actorUserId, timestamp])
+model OfflineDraft {
+  id         String   @id @default(cuid())
+  clientId   String
+  userId     String
+  entityType String
+  entityId   String?
+  payload    String   // JSON
+  syncStatus String   @default("PENDING")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([clientId, userId])
 }

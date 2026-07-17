@@ -1,137 +1,96 @@
-/**
- * AIC-DCT API server (Phase 1).
- *
- * Phase 1 scope:
- *   1. Typed, consistent error envelope via Fastify setErrorHandler.
- *   2. Real handlers for the dashboard surface (kpis / trends / center
- *      risk / risks / high-risk subjects / audit log / AI suggestions /
- *      task queue) backed by the Prisma seed. Other domain routes still
- *      register 501 skeletons — they will land in Phase 2+ as the
- *      corresponding Web pages go live.
- *   3. Production-grade defaults: helmet, CORS, request-id, structured
- *      pino logging, graceful Prisma disconnect on shutdown.
- *
- * Real Prisma / DB wiring is live in Phase 1 for the dashboard; broader
- * domain tables are introduced in Phase 2.
- */
-import Fastify, { type FastifyInstance } from "fastify";
-import cors from "@fastify/cors";
-import helmet from "@fastify/helmet";
-import sensible from "@fastify/sensible";
-import { ApiErrorException, ApiErrorCode } from "@aic-dct/domain";
-import { registerHealthRoutes } from "./routes/health.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { registerProjectRoutes } from "./routes/projects.js";
-import { registerSubjectRoutes } from "./routes/subjects.js";
-import { registerConsentRoutes } from "./routes/consent.js";
-import { registerVisitRoutes } from "./routes/visits.js";
-import { registerEproRoutes } from "./routes/epro.js";
-import { registerSafetyRoutes } from "./routes/safety.js";
-import { registerRiskRoutes } from "./routes/risks.js";
-import { registerDrugSampleRoutes } from "./routes/drugs-samples.js";
-import { registerReportRoutes } from "./routes/reports.js";
-import { registerDocumentRoutes } from "./routes/documents.js";
-import { registerAiConfigRoutes } from "./routes/ai-config.js";
-import { registerAuditRoutes } from "./routes/audit.js";
-import { registerDashboardRoutes } from "./routes/dashboard.js";
-import { registerProtocolRoutes } from "./routes/protocol.js";
-import { registerSubjectPortalRoutes } from "./routes/subject-portal.js";
-import { registerAssistedEntryRoutes } from "./routes/assisted-entry.js";
+import { config as loadEnv } from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export async function buildServer(): Promise<FastifyInstance> {
+const __envDir = path.dirname(fileURLToPath(import.meta.url));
+if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
+  loadEnv({ path: path.resolve(__envDir, '..', '.env') });
+}
+
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import jwt from '@fastify/jwt';
+import multipart from '@fastify/multipart';
+import fastifyStatic from '@fastify/static';
+import { authenticate } from './lib/auth.js';
+import { healthRoutes } from './routes/health.js';
+import { authRoutes } from './routes/auth.js';
+import { workbenchRoutes } from './routes/workbench.js';
+import { monitoringVisitRoutes } from './routes/monitoring-visits.js';
+import { actionPackRoutes } from './routes/action-packs.js';
+import { todoRoutes } from './routes/todos.js';
+import { issueRoutes } from './routes/issues.js';
+import { hoursRoutes } from './routes/hours.js';
+import { reviewRoutes } from './routes/reviews.js';
+import { attachmentRoutes } from './routes/attachments.js';
+import { syncRoutes } from './routes/sync.js';
+import { auditRoutes } from './routes/audit.js';
+import { voiceRoutes } from './routes/voice.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export async function buildApp() {
   const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      transport:
-        process.env.NODE_ENV === "production"
-          ? undefined
-          : { target: "pino-pretty", options: { translateTime: "SYS:HH:MM:ss.l" } },
-    },
-    genReqId: () => `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    logger: process.env.NODE_ENV !== 'test',
   });
 
-  await app.register(helmet);
-  await app.register(cors, { origin: true, credentials: true });
-  await app.register(sensible);
+  await app.register(cors, { origin: true });
+  await app.register(jwt, {
+    secret: process.env.JWT_SECRET || 'dev-secret-change-me',
+  });
+  await app.register(multipart, {
+    limits: { fileSize: 50 * 1024 * 1024 },
+  });
 
-  app.setErrorHandler((err, req, reply) => {
-    const requestId = req.id;
-    req.log.error({ err, requestId }, "request_failed");
+  const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads'));
+  await app.register(fastifyStatic, {
+    root: uploadDir,
+    prefix: '/uploads/',
+    decorateReply: false,
+  });
 
-    if (err instanceof ApiErrorException) {
-      return reply.status(err.status).send(err.toJSON());
-    }
+  app.decorate('authenticate', authenticate);
 
-    // Fastify validation errors are exposed as FST_ERR_VALIDATION
-    const validation = (err as { validation?: unknown; statusCode?: number }).validation;
-    const statusCode = (err as { statusCode?: number }).statusCode ?? 500;
-    const code =
-      validation && statusCode === 400
-        ? ApiErrorCode.VALIDATION_ERROR
-        : statusCode === 404
-          ? ApiErrorCode.NOT_FOUND
-          : statusCode === 401
-            ? ApiErrorCode.UNAUTHORIZED
-            : statusCode === 403
-              ? ApiErrorCode.FORBIDDEN
-              : ApiErrorCode.INTERNAL;
+  await app.register(async (api) => {
+    await api.register(healthRoutes);
+    await api.register(authRoutes, { prefix: '/auth' });
+    await api.register(workbenchRoutes, { prefix: '/workbench' });
+    await api.register(monitoringVisitRoutes, { prefix: '/monitoring-visits' });
+    await api.register(actionPackRoutes, { prefix: '/action-packs' });
+    await api.register(todoRoutes, { prefix: '/todos' });
+    await api.register(issueRoutes, { prefix: '/issues' });
+    await api.register(hoursRoutes, { prefix: '/hours' });
+    await api.register(reviewRoutes, { prefix: '/reviews' });
+    await api.register(attachmentRoutes, { prefix: '/attachments' });
+    await api.register(syncRoutes, { prefix: '/sync' });
+    await api.register(auditRoutes, { prefix: '/audit' });
+    await api.register(voiceRoutes, { prefix: '/voice' });
+  }, { prefix: '/api' });
 
-    return reply.status(statusCode).send({
-      code,
-      message: err.message || "Internal error",
-      details: validation ? { issues: validation } : {},
-      requestId,
+  app.setErrorHandler((error: Error, _request, reply) => {
+    app.log.error(error);
+    reply.status(500).send({
+      error: { code: 'INTERNAL_ERROR', message: error.message || '服务器错误' },
     });
   });
-
-  app.setNotFoundHandler((req, reply) => {
-    reply.status(404).send({
-      code: ApiErrorCode.NOT_FOUND,
-      message: `No route for ${req.method} ${req.url}`,
-      details: { method: req.method, url: req.url },
-      requestId: req.id,
-    });
-  });
-
-  // Phase 0 routes — each one is a typed skeleton. Later phases fill the handlers.
-  registerHealthRoutes(app);
-  registerAuthRoutes(app);
-  registerProjectRoutes(app);
-  registerSubjectRoutes(app);
-  registerConsentRoutes(app);
-  registerVisitRoutes(app);
-  registerEproRoutes(app);
-  registerSafetyRoutes(app);
-  registerRiskRoutes(app);
-  registerDrugSampleRoutes(app);
-  registerReportRoutes(app);
-  registerDocumentRoutes(app);
-  registerAiConfigRoutes(app);
-  registerAuditRoutes(app);
-  registerDashboardRoutes(app);
-  registerProtocolRoutes(app);
-  registerSubjectPortalRoutes(app);
-  registerAssistedEntryRoutes(app);
 
   return app;
 }
 
-// Allow `node dist/server.js` (compiled) and `tsx src/server.ts` (dev) to
-// start the listener. Both entrypoints should bind the port; otherwise
-// `npm run dev` (which uses tsx + .ts) silently exits and leaves the
-// Web Vite proxy with a connection-refused upstream.
-const entry = process.argv[1] ?? "";
-const isMain =
-  typeof process !== "undefined" &&
-  Array.isArray(process.argv) &&
-  (entry.endsWith("server.js") || entry.endsWith("server.ts"));
+async function start() {
+  const app = await buildApp();
+  const port = parseInt(process.env.PORT || '3001', 10);
+  const host = process.env.HOST || '0.0.0.0';
 
-if (isMain) {
-  const port = Number(process.env.PORT ?? 4000);
-  buildServer()
-    .then((app) => app.listen({ port, host: "0.0.0.0" }))
-    .catch((err) => {
-      console.error("failed to start api", err);
-      process.exit(1);
-    });
+  try {
+    await app.listen({ port, host });
+    console.log(`API server running at http://${host}:${port}`);
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
+}
+
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+  start();
 }

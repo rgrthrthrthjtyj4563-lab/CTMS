@@ -43,4 +43,8 @@ logs/
 # generated seeds/state
 *.sqlite
 *.sqlite-journal
+*.db
+*.db-journal
+uploads/
+.expo/
 prisma/migrations/dev.db*

@@ -1,21 +1,13 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from '@prisma/client';
 
-/**
- * Single Prisma client instance per API process. Phase 1 lazily creates
- * the client; Phase 2 may switch to per-request transactions.
- */
-let _client: PrismaClient | undefined;
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
-export function prisma(): PrismaClient {
-  if (!_client) {
-    _client = new PrismaClient();
-  }
-  return _client;
-}
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
+  });
 
-export async function disconnectPrisma(): Promise<void> {
-  if (_client) {
-    await _client.$disconnect();
-    _client = undefined;
-  }
+if (process.env.NODE_ENV !== 'production') {
+  globalForPrisma.prisma = prisma;
 }

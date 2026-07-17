@@ -1,26 +1,22 @@
 {
-  "name": "aic-dct",
+  "name": "ai-clinical-operations",
   "private": true,
-  "version": "0.1.0",
-  "description": "AIC-DCT Remote Intelligent Clinical Trial Operating System",
-  "type": "module",
-  "workspaces": [
-    "packages/*",
-    "apps/*"
-  ],
+  "version": "1.0.0",
+  "description": "AI Clinical Operations APP V1 monorepo",
   "scripts": {
-    "dev": "npm run dev --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
-    "db:migrate": "npm run db:migrate --workspace=apps/api --if-present",
-    "db:seed": "npm run db:seed --workspace=apps/api --if-present",
-    "db:generate": "npm run db:generate --workspace=apps/api --if-present"
-  },
-  "devDependencies": {
-    "typescript": "5.5.4",
-    "@types/node": "20.14.10"
+    "dev": "pnpm --filter @clinical/api dev",
+    "dev:mobile": "pnpm --filter @clinical/mobile dev",
+    "dev:web": "pnpm --filter @clinical/mobile dev:web",
+    "dev:mobile:tunnel": "pnpm --filter @clinical/mobile dev:tunnel",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "smoke": "pnpm --filter @clinical/mobile smoke",
+    "db:generate": "pnpm --filter @clinical/api db:generate",
+    "db:migrate": "pnpm --filter @clinical/api db:migrate",
+    "db:seed": "pnpm --filter @clinical/api db:seed",
+    "db:reset": "pnpm --filter @clinical/api db:reset"
   },
   "engines": {
     "node": ">=20"

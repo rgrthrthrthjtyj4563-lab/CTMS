@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -8,32 +8,41 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
-} from "react-native";
-import { router } from "expo-router";
-import { ApiError, login } from "../src/lib/api";
-import { saveSession } from "../src/lib/session";
-import { colors } from "../src/theme";
+  ScrollView,
+} from 'react-native';
+import { router } from 'expo-router';
+import { Picker } from '@react-native-picker/picker';
+import { Zap } from 'lucide-react-native';
+import { ApiError, api } from '../src/lib/api';
+import { saveSession } from '../src/lib/session';
+import { StatusBar } from '../src/components/StatusBar';
+import { getApiBaseUrl } from '../src/lib/config';
+import { colors, radius, typography } from '../src/theme';
 
-const DEMO_EMAIL = "subject-a@aic-dct.test";
+const ORGS = [
+  { code: 'qm', label: '启明医药CRO' },
+  { code: 'aj', label: '安健制药（申办方）' },
+  { code: 'hs', label: '华山医学研究SMO' },
+];
 
 export default function LoginScreen() {
-  const [email, setEmail] = useState(DEMO_EMAIL);
-  const [password, setPassword] = useState("1234");
+  const [phone, setPhone] = useState('13800138001');
+  const [password, setPassword] = useState('password');
+  const [org, setOrg] = useState('qm');
   const [busy, setBusy] = useState(false);
 
   async function onLogin() {
     setBusy(true);
     try {
-      const { session } = await login(email.trim(), password);
-      if (session.role !== "Subject") {
-        Alert.alert("仅支持受试者账号", "请使用 subject-a@aic-dct.test 等受试者账号登录。");
-        return;
+      const res = await api.login(phone.trim(), password);
+      await saveSession({ token: res.token, user: res.user });
+      if (['PM', 'QA'].includes(res.user.role)) {
+        router.replace('/review');
+      } else {
+        router.replace('/(tabs)/workbench');
       }
-      await saveSession(session);
-      router.replace("/(tabs)/tasks");
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : "登录失败";
-      Alert.alert("登录失败", msg);
+      Alert.alert('登录失败', e instanceof ApiError ? e.message : '请检查网络连接');
     } finally {
       setBusy(false);
     }
@@ -42,78 +51,132 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.screen}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={styles.card}>
-        <Text style={styles.brand}>AIC-DCT</Text>
-        <Text style={styles.title}>受试者端</Text>
-        <Text style={styles.sub}>
-          您填写的数据将标记为受试者源数据（Subject 通道），与 CRC 代录分开保存。
-        </Text>
-        <TextInput
-          style={styles.input}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          value={email}
-          onChangeText={setEmail}
-          placeholder="邮箱"
-          placeholderTextColor={colors.muted}
-        />
-        <TextInput
-          style={styles.input}
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-          placeholder="密码（开发态 ≥4 位）"
-          placeholderTextColor={colors.muted}
-        />
+      <StatusBar />
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.logo}>
+          <View style={styles.logoMark}>
+            <Zap size={21} color={colors.white} strokeWidth={2.2} />
+          </View>
+          <Text style={styles.h1}>AI临床运营</Text>
+          <Text style={styles.sub}>协同平台 · 专业版</Text>
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>手机号 / 工号</Text>
+          <TextInput
+            style={styles.input}
+            value={phone}
+            onChangeText={setPhone}
+            keyboardType="phone-pad"
+            placeholderTextColor={colors.textMuted}
+          />
+        </View>
+        <View style={styles.field}>
+          <Text style={styles.label}>密码</Text>
+          <TextInput
+            style={styles.input}
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            placeholderTextColor={colors.textMuted}
+          />
+        </View>
+        <View style={styles.field}>
+          <Text style={styles.label}>所属组织</Text>
+          <View style={styles.pickerWrap}>
+            <Picker selectedValue={org} onValueChange={setOrg} style={styles.picker}>
+              {ORGS.map((o) => (
+                <Picker.Item key={o.code} label={o.label} value={o.code} />
+              ))}
+            </Picker>
+          </View>
+        </View>
+
         <Pressable
           style={[styles.btn, busy && styles.btnDisabled]}
           onPress={() => void onLogin()}
           disabled={busy}
         >
-          <Text style={styles.btnTxt}>{busy ? "登录中…" : "进入我的研究"}</Text>
+          <Text style={styles.btnText}>{busy ? '登录中…' : '登录'}</Text>
         </Pressable>
-        <Text style={styles.hint}>演示账号：subject-a@aic-dct.test / 1234</Text>
-      </View>
+
+        <View style={styles.links}>
+          <Text style={styles.link}>忘记密码</Text>
+          <Text style={styles.link}>扫码登录</Text>
+        </View>
+      </ScrollView>
+        <Text style={styles.footer}>v2.6.1 · API: {getApiBaseUrl()}</Text>
+        <Text style={styles.footerHint}>真机请确保手机与电脑同一 Wi-Fi，且 API 已启动</Text>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.bg,
-    justifyContent: "center",
-    padding: 24,
+  screen: { flex: 1, backgroundColor: colors.card },
+  content: { paddingHorizontal: 24, paddingTop: 40, paddingBottom: 24 },
+  logo: { marginBottom: 40 },
+  logoMark: {
+    width: 44,
+    height: 44,
+    backgroundColor: colors.primary,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
   },
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: colors.border,
+  h1: { fontSize: typography.title, fontWeight: '700', color: colors.text },
+  sub: { fontSize: typography.base, color: colors.textSecondary, marginTop: 2 },
+  field: { marginBottom: 16 },
+  label: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+    letterSpacing: 0.5,
   },
-  brand: { fontSize: 13, color: colors.primary, fontWeight: "700", letterSpacing: 1 },
-  title: { fontSize: 24, fontWeight: "700", color: colors.text, marginTop: 8 },
-  sub: { fontSize: 13, color: colors.muted, marginTop: 8, lineHeight: 20, marginBottom: 20 },
   input: {
+    height: 44,
+    backgroundColor: '#F9FAFB',
+    borderRadius: radius.button,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
+    paddingHorizontal: 14,
     fontSize: 15,
     color: colors.text,
   },
-  btn: {
-    backgroundColor: colors.primary,
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 4,
+  pickerWrap: {
+    borderRadius: radius.button,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#F9FAFB',
+    overflow: 'hidden',
   },
-  btnDisabled: { opacity: 0.6 },
-  btnTxt: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  hint: { marginTop: 16, fontSize: 12, color: colors.muted, textAlign: "center" },
+  picker: { height: 44 },
+  btn: {
+    marginTop: 16,
+    height: 48,
+    backgroundColor: colors.primary,
+    borderRadius: radius.button,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnDisabled: { opacity: 0.7 },
+  btnText: { color: colors.white, fontSize: 15, fontWeight: '600' },
+  links: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 },
+  link: { fontSize: typography.base, color: colors.primary },
+  footer: {
+    textAlign: 'center',
+    fontSize: 11,
+    color: colors.textMuted,
+    paddingBottom: 4,
+  },
+  footerHint: {
+    textAlign: 'center',
+    fontSize: 10,
+    color: colors.textMuted,
+    paddingBottom: 40,
+  },
 });
