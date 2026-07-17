@@ -248,6 +248,11 @@ function resolveTodoHref(
     }
     return `/action-pack?packId=${t.sourceId}`;
   }
+  // TASK todos are sourced to their action pack (sourceId = packId).
+  // Jump to the matching pack so users land on the actionable item context.
+  if (t.sourceType === 'TASK' && t.sourceId) {
+    return `/action-pack?packId=${t.sourceId}`;
+  }
   if (t.monitoringVisitId) return `/imv-active?visitId=${t.monitoringVisitId}`;
   if (t.sourceType === 'MONITORING_VISIT' && t.sourceId) {
     return `/imv-active?visitId=${t.sourceId}`;

@@ -21,6 +21,11 @@ function openTodo(t: TodoItem, role?: string) {
     goActionPack(t.sourceId, isReviewer ? 'review' : undefined);
     return;
   }
+  // TASK todos are sourced to their action pack (sourceId = packId).
+  if (t.sourceType === 'TASK' && t.sourceId) {
+    goActionPack(t.sourceId);
+    return;
+  }
   if (t.monitoringVisitId || (t.sourceType === 'MONITORING_VISIT' && t.sourceId)) {
     goImvActive(t.monitoringVisitId || t.sourceId!);
     return;

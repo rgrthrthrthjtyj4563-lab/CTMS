@@ -296,6 +296,17 @@ export async function ensureVisitActivities(visitId: string, visitType: string) 
   });
 }
 
+/** Parse LLM/user date strings; invalid values (e.g. "补齐") become undefined. */
+function parseOptionalDate(value: unknown): Date | undefined {
+  if (value == null || value === '') return undefined;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : undefined;
+  }
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+}
+
 export async function confirmActionItem(
   itemId: string,
   userId: string,
@@ -317,20 +328,22 @@ export async function confirmActionItem(
   const data = editedData ?? (JSON.parse(item.data) as Record<string, unknown>);
   const visit = item.actionPack.monitoringVisit;
   let savedEntityId: string | undefined;
+  const fallbackFields: string[] = [];
 
   switch (item.type) {
     case 'MONITORING_VISIT_RECORD': {
       const personnel = data.sitePersonnel as string[] | undefined;
       const findings = data.findings as string[] | undefined;
+      // Defensive: skip invalid datetime strings so Prisma never sees Invalid Date.
+      const actualStartTime = parseOptionalDate(data.actualStartTime);
+      const actualEndTime = parseOptionalDate(data.actualEndTime);
+      if (data.actualStartTime && !actualStartTime) fallbackFields.push('actualStartTime');
+      if (data.actualEndTime && !actualEndTime) fallbackFields.push('actualEndTime');
       await prisma.monitoringVisit.update({
         where: { id: visit.id },
         data: {
-          actualStartTime: data.actualStartTime
-            ? new Date(data.actualStartTime as string)
-            : undefined,
-          actualEndTime: data.actualEndTime
-            ? new Date(data.actualEndTime as string)
-            : undefined,
+          actualStartTime,
+          actualEndTime,
           subjectsReviewed: data.subjectsReviewed as number | undefined,
           workSummary: data.workSummary as string,
           sitePersonnel: personnel ? JSON.stringify(personnel) : undefined,
@@ -358,13 +371,18 @@ export async function confirmActionItem(
         const minutes = (e[0] * 60 + (e[1] || 0)) - (s[0] * 60 + (s[1] || 0));
         if (minutes > 0) inferredDuration = minutes / 60;
       }
+      // Defensive: invalid/missing date → actualStart → actualEnd → plannedDate.
+      const parsedDate = parseOptionalDate(data.date);
+      const hoursDate =
+        parsedDate ?? visit.actualStartTime ?? visit.actualEndTime ?? visit.plannedDate;
+      if (!parsedDate) fallbackFields.push('date');
       const hours = await prisma.hoursRecord.create({
         data: {
           userId,
           projectId: (data.projectId as string) || visit.projectId,
           siteId: (data.siteId as string) || visit.siteId,
           monitoringVisitId: visit.id,
-          date: new Date(data.date as string),
+          date: hoursDate,
           workType: (data.workType as string) || 'ON_SITE_MONITORING',
           startTime: (data.startTime as string) ?? (data.start as string | undefined),
           endTime: (data.endTime as string) ?? (data.end as string | undefined),
@@ -382,33 +400,38 @@ export async function confirmActionItem(
         Major: 'HIGH', HIGH: 'HIGH', Critical: 'CRITICAL', CRITICAL: 'CRITICAL',
         Moderate: 'MEDIUM', MEDIUM: 'MEDIUM', Minor: 'LOW', LOW: 'LOW',
       };
+      // Defensive: invalid targetDate (e.g. Chinese text) must not block confirm.
+      const targetDate = parseOptionalDate(data.targetDate);
+      if (data.targetDate && !targetDate) fallbackFields.push('targetDate');
+      const issueTitle = (data.title as string) || item.title;
       const issue = await prisma.issue.create({
         data: {
           projectId: (data.projectId as string) || visit.projectId,
           siteId: (data.siteId as string) || visit.siteId,
           monitoringVisitId: visit.id,
           reporterId: userId,
-          title: (data.title as string) || item.title,
+          title: issueTitle,
           description: (data.description as string) || item.description || item.title,
           category: (data.category as string) || 'OTHER',
           severity: severityMap[(data.severity as string) || ''] || 'MEDIUM',
           subjectId: data.subjectId as string | undefined,
           responsiblePerson: data.responsiblePerson as string | undefined,
-          targetDate: data.targetDate ? new Date(data.targetDate as string) : undefined,
+          targetDate,
           requiredEvidence: data.requiredEvidence as string | undefined,
           status: 'CRA_CONFIRMED',
         },
       });
       savedEntityId = issue.id;
 
-      if (data.responsiblePerson && data.targetDate) {
+      // Only create follow-up todo when we have a valid deadline (not garbage strings).
+      if (data.responsiblePerson && targetDate) {
         await prisma.todo.create({
           data: {
             userId,
-            title: `跟进: ${data.title}`,
+            title: `跟进: ${issueTitle}`,
             description: data.description as string,
             group: 'WAITING_OTHERS',
-            dueDate: new Date(data.targetDate as string),
+            dueDate: targetDate,
             sourceType: 'ISSUE',
             sourceId: issue.id,
             projectId: visit.projectId,
@@ -421,7 +444,10 @@ export async function confirmActionItem(
       break;
     }
     case 'TASK': {
-      const dueDate = data.dueDate ? new Date(data.dueDate as string) : undefined;
+      // Defensive: invalid dueDate (e.g. "补齐") → undefined (DB allows null).
+      // Does not block confirm; UI may show empty due label.
+      const dueDate = parseOptionalDate(data.dueDate);
+      if (data.dueDate && !dueDate) fallbackFields.push('dueDate');
       const todo = await prisma.todo.create({
         data: {
           userId,
@@ -430,6 +456,10 @@ export async function confirmActionItem(
           group: dueDate && dueDate <= new Date() ? 'DUE_TODAY' : 'NOW',
           dueDate,
           sourceType: 'TASK',
+          // Source the task todo to its action pack so the todo can navigate into
+          // the matching action item in the pack (TASK todos don't have a separate
+          // detail page in V1; the action pack is the closest meaningful target).
+          sourceId: item.actionPackId,
           projectId: visit.projectId,
           siteId: visit.siteId,
           monitoringVisitId: visit.id,
@@ -454,30 +484,60 @@ export async function confirmActionItem(
       break;
     }
     case 'REPORT_DRAFT': {
-      const sections = data.sections as Array<Record<string, unknown>>;
+      // Defensive: AI may not always emit title/sections in expected shape.
+      // Fall back to a visit-derived title and a single placeholder section so
+      // confirm never throws and the report draft can be repaired later.
+      const sections = Array.isArray(data.sections)
+        ? (data.sections as Array<Record<string, unknown>>)
+        : [];
+      const title =
+        (typeof data.title === 'string' && (data.title as string).trim()) ||
+        item.title ||
+        `${visit.type} 监查报告草稿`;
+      if (!(typeof data.title === 'string' && (data.title as string).trim())) {
+        fallbackFields.push('title');
+      }
+      if (sections.length === 0) fallbackFields.push('sections');
+      const safeSections =
+        sections.length > 0
+          ? sections
+          : [
+              {
+                sectionKey: 'summary',
+                title: '访视摘要',
+                content: (data.description as string) || item.description || '（待补全）',
+                status: 'DRAFT',
+              },
+            ];
       await prisma.reportDraft.upsert({
         where: { monitoringVisitId: visit.id },
         create: {
           monitoringVisitId: visit.id,
-          title: data.title as string,
-          sections: JSON.stringify(sections),
+          title,
+          sections: JSON.stringify(safeSections),
           status: 'DRAFT',
         },
         update: {
-          title: data.title as string,
-          sections: JSON.stringify(sections),
+          title,
+          sections: JSON.stringify(safeSections),
         },
       });
       savedEntityId = visit.id;
       break;
     }
     case 'FOLLOW_UP_ITEM': {
+      // Defensive: invalid/missing dueDate → today + 7 days placeholder.
+      const parsedFollowUpDue = parseOptionalDate(data.dueDate);
+      const followUpDue = parsedFollowUpDue ?? new Date(Date.now() + 7 * 86400000);
+      if (!parsedFollowUpDue) fallbackFields.push('dueDate');
+      if (!(data.item as string | undefined)) fallbackFields.push('item');
+      if (!(data.responsiblePerson as string | undefined)) fallbackFields.push('responsiblePerson');
       const followUp = await prisma.followUpItem.create({
         data: {
           monitoringVisitId: visit.id,
-          item: data.item as string,
-          responsiblePerson: data.responsiblePerson as string,
-          dueDate: new Date(data.dueDate as string),
+          item: (data.item as string) || item.title,
+          responsiblePerson: (data.responsiblePerson as string) || '（待指定）',
+          dueDate: followUpDue,
           requiredEvidence: data.requiredEvidence as string | undefined,
           relatedIssueTitle: data.relatedIssueTitle as string | undefined,
           suggestedWording: data.suggestedWording as string | undefined,
@@ -505,11 +565,15 @@ export async function confirmActionItem(
   });
 
   await logAudit({
-    type: 'ACTION_CONFIRMED',
+    type: fallbackFields.length > 0 ? 'ACTION_CONFIRMED_FALLBACK' : 'ACTION_CONFIRMED',
     userId,
     entityType: 'ActionItem',
     entityId: itemId,
-    payload: { type: item.type, savedEntityId },
+    payload: {
+      type: item.type,
+      savedEntityId,
+      ...(fallbackFields.length > 0 ? { fallbackFields } : {}),
+    },
   });
 
   return { entityId: savedEntityId, type: item.type };
