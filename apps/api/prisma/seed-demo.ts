@@ -7,7 +7,6 @@
 // 运行：pnpm --filter @clinical/api db:seed:demo
 // 回滚主账号默认上下文：pnpm --filter @clinical/api db:reset
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
@@ -80,6 +79,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-
-// bcrypt 仅当主 seed 未跑过且需要就地建账号时引入；这里保持空引用避免误删
-void bcrypt;

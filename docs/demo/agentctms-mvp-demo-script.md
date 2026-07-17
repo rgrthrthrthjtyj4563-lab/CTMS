@@ -47,13 +47,14 @@
 | 3:00–3:30 | 结束访视 → 2 秒内出行动包 | 点结束访视 → 自动跳行动包 |
 | 3:30–4:30 | 行动包：候选/来源/状态 一屏讲清 | 翻看"监查记录/工时/Issue/Risk/CAPA/任务/证据/报告/跟进"全部点亮 |
 | 4:30–5:00 | 逐项确认 + 提交 → PM 一秒通过（控制演示节奏） | 勾选全部确认 → 提交 → 切 PM 账号看通过 → 切回 CRA 看最终状态 |
+| 5:00–5:30 | **（可选分镜）退回闭环**：PM 退回 → CRA 工作台见原因 | PM 选"退回"并填写 1 句原因（如"Issue 描述需更具体"）→ 切回 CRA → 工作台"今日重点"出现"PM退回"红标 → 点开回到行动包可见 `rejectionReason` |
 
 > 录屏剪辑版（D5）从 5 分钟分镜中取 0:30–3:00 + 3:30–4:30，约 2 分钟。
 
 ## 3. 演示稳定性的工程护栏
 
-1. 行动包一律走 `parseWithRules` 兜底，关闭真实 LLM 依赖；
-2. `ai.ts` 不读 `TEXT_LLM_API_KEY` 即纯本地 deterministic；
+1. 行动包一律走 `parseWithRules` 兜底：建议 `apps/api/.env` 设 `DEMO_MODE=1`（即使有 `TEXT_LLM_API_KEY` 也强制 rules）；
+2. `ai.ts` 提供 `isDemoMode()` 开关；`apps/api/.env.example` 已加注释；
 3. seed 内置 IMV、今日输入样例、附件占位、Issue 历史；
 4. confirm 回写已经过 `normalizeGeneratedPack` + `ACTION_CONFIRMED_FALLBACK` 双护栏；
 5. e2e 单测走 `:3001 + seed` 必须绿（演示前跑一次）；
@@ -81,6 +82,5 @@
 - [x] 固定账号 / 项目 / 中心 / 输入样例冻结
 - [x] 期望行动包类型清单冻结
 - [x] 演示事故兜底脚本冻结
-- [ ] seed 落地（D1）
-- [ ] APP 主路径打磨（D2）
-- [ ] 录屏 + 1-pager（D5）
+- [x] 退回闭环分镜补段（5:00–5:30，可选）
+- [ ] Phase E 全部勾选（见 [phase-e-demo-ready.md](./phase-e-demo-ready.md) §4）

@@ -54,5 +54,7 @@
 - [x] 录屏工艺冻结
 - [x] 与 5 分钟分镜对齐
 - [x] 后期清单与兜底脚本
+- [x] Phase E：DEMO_MODE=1 强制 rules（[phase-e-demo-ready.md](./phase-e-demo-ready.md) §2 E1）
+- [x] Phase E：行动包候选/来源/状态一屏可见（[phase-e-demo-ready.md](./phase-e-demo-ready.md) §2 E3）
 - [ ] 实录一版（演示前 24h）
 - [ ] 二次剪辑（演示前 12h）

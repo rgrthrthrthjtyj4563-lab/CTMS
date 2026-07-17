@@ -56,6 +56,23 @@ function getTextModel(): string {
   return process.env.TEXT_LLM_MODEL || process.env.XAI_MODEL || 'grok-4.5';
 }
 
+/**
+ * Demo guard — when DEMO_MODE is enabled (or DEMO_PROFILE=demo), force the
+ * rule-based parser even if a TEXT_LLM_API_KEY is configured. This guarantees
+ * deterministic action-pack output for investor demos and screen recordings.
+ *
+ * Activation (any of):
+ *   - DEMO_MODE=1 | true | yes | on
+ *   - DEMO_PROFILE=demo
+ */
+export function isDemoMode(): boolean {
+  const flag = (process.env.DEMO_MODE || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(flag)) return true;
+  const profile = (process.env.DEMO_PROFILE || '').trim().toLowerCase();
+  if (profile === 'demo') return true;
+  return false;
+}
+
 /** Rule-based parser for acceptance test and offline/test mode */
 export function parseWithRules(ctx: AiContext, text: string): GeneratedActionPack {
   const today = ctx.visitDate;
@@ -472,8 +489,13 @@ function isValidGeneratedPack(parsed: GeneratedActionPack, _ctx: AiContext): boo
 export async function generateActionPack(ctx: AiContext): Promise<GeneratedActionPack> {
   const combinedText = ctx.inputs.map((i) => i.content).join('\n');
   const client = getOpenAIClient();
+  const demoMode = isDemoMode();
 
-  if (!client) {
+  // Demo mode: always use rules, even when a key is configured.
+  if (demoMode || !client) {
+    if (demoMode) {
+      console.warn('[DEMO_MODE] forcing rule-based action pack generation');
+    }
     return normalizeGeneratedPack(parseWithRules(ctx, combinedText));
   }
 
