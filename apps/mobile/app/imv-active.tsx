@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   ClipboardList,
   Pencil,
+  Sparkles,
 } from 'lucide-react-native';
 import { api, ApiError } from '../src/lib/api';
 import {
@@ -42,12 +43,49 @@ type Activity = {
   note?: string | null;
 };
 
+/** AI pipeline status for field inputs (not formal records yet). */
+type ProcessStatus = 'recorded' | 'pending_ai' | 'in_pack' | 'failed' | 'voided';
+
 type Entry = {
   id: string;
   time: string;
   content: string;
-  status: 'done' | 'risk';
+  risk: boolean;
+  process: ProcessStatus;
+  type?: string;
 };
+
+function processLabel(p: ProcessStatus): string {
+  switch (p) {
+    case 'recorded':
+      return '已记录';
+    case 'pending_ai':
+      return '待 AI 整理';
+    case 'in_pack':
+      return '已纳入行动包';
+    case 'failed':
+      return '整理失败，可重试';
+    case 'voided':
+      return '已作废';
+    default:
+      return '已记录';
+  }
+}
+
+function processColor(p: ProcessStatus): string {
+  switch (p) {
+    case 'pending_ai':
+      return colors.amber;
+    case 'in_pack':
+      return colors.primary;
+    case 'failed':
+      return colors.red;
+    case 'voided':
+      return colors.textMuted;
+    default:
+      return colors.textSecondary;
+  }
+}
 
 function formatDurationMinutes(minutes: number | null | undefined): string {
   if (minutes == null || Number.isNaN(minutes)) return '—';
@@ -58,8 +96,12 @@ function formatDurationMinutes(minutes: number | null | undefined): string {
 }
 
 export default function IMVActiveScreen() {
-  const rawParams = useLocalSearchParams<{ visitId?: string | string[] }>();
+  const rawParams = useLocalSearchParams<{
+    visitId?: string | string[];
+    voiceDone?: string | string[];
+  }>();
   const visitId = paramStr(rawParams.visitId);
+  const voiceDoneFlag = paramStr(rawParams.voiceDone);
   const [visitMeta, setVisitMeta] = useState<{
     projectCode: string;
     siteName: string;
@@ -76,6 +118,8 @@ export default function IMVActiveScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showActivities, setShowActivities] = useState(true);
+  const [voiceBanner, setVoiceBanner] = useState(false);
+  const [hasActionPack, setHasActionPack] = useState(false);
 
   const [editEntry, setEditEntry] = useState<Entry | null>(null);
   const [pendingFile, setPendingFile] = useState<PickedFile | null>(null);
@@ -92,26 +136,46 @@ export default function IMVActiveScreen() {
       const durationMinutes =
         d.visit.durationMinutes ?? Math.round((Date.now() - start) / 60000);
 
+      const status = d.visit.status;
+      // Pack is created during wrap-up complete; statuses after PENDING_WRAP_UP imply pack path done.
+      const packExists = ![
+        'PLANNED',
+        'IN_PROGRESS',
+        'PENDING_WRAP_UP',
+        'CANCELLED',
+      ].includes(status);
+      setHasActionPack(packExists);
       setVisitMeta({
         projectCode: d.visit.project.code,
         siteName: d.visit.site.name,
         siteCode: d.visit.site.code,
-        status: d.visit.status,
+        status,
         actualStartTime: d.visit.actualStartTime,
         actualEndTime: d.visit.actualEndTime,
         durationMinutes,
       });
 
       setEntries(
-        d.visit.inputs.map((row) => ({
-          id: row.id,
-          time: new Date(row.createdAt).toLocaleTimeString('zh-CN', {
-            hour: '2-digit',
-            minute: '2-digit',
+        d.visit.inputs
+          .filter((row) => !row.isVoided)
+          .map((row) => {
+            const voided = Boolean(row.isVoided) || row.status === 'VOIDED';
+            let process: ProcessStatus = 'pending_ai';
+            if (voided) process = 'voided';
+            else if (packExists) process = 'in_pack';
+            else process = 'pending_ai';
+            return {
+              id: row.id,
+              time: new Date(row.createdAt).toLocaleTimeString('zh-CN', {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+              content: row.transcript || row.content,
+              risk: /发现|未签字|缺失|⚑|AE|SAE/.test(row.content),
+              process,
+              type: row.type,
+            };
           }),
-          content: row.transcript || row.content,
-          status: /发现|未签字|缺失|⚑/.test(row.content) ? 'risk' : 'done',
-        })),
       );
 
       try {
@@ -129,7 +193,12 @@ export default function IMVActiveScreen() {
   useFocusEffect(
     useCallback(() => {
       void load();
-    }, [load]),
+      if (voiceDoneFlag === '1') {
+        setVoiceBanner(true);
+        // clear query flag so banner only shows once
+        router.setParams({ voiceDone: undefined });
+      }
+    }, [load, voiceDoneFlag]),
   );
 
   const submitInput = async () => {
@@ -233,15 +302,12 @@ export default function IMVActiveScreen() {
     if (!visitId || busy) return;
     setBusy(true);
     try {
-      // Fast path: only mark visit ended (no AI wait). Pack is built on summary page.
-      // Avoids UI stuck on「处理中」when LLM generateActionPack is slow.
+      // Mark ended quickly; summary page runs staged AI pack generation.
       if (visitMeta?.status === 'IN_PROGRESS' || !visitMeta?.status) {
         await api.endVisit(visitId);
       }
-      // Navigate immediately — summary page will complete/idempotent-generate pack
       goVisitSummary(visitId);
     } catch (e) {
-      // If already ended, still try summary
       const code = e instanceof ApiError ? e.code : undefined;
       const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : '结束失败';
       if (
@@ -250,7 +316,6 @@ export default function IMVActiveScreen() {
       ) {
         goVisitSummary(visitId);
       } else {
-        // Fallback: try full complete once (may be slower)
         try {
           const res = await api.completeVisit(visitId);
           goVisitSummary(visitId, res.actionPack?.id ?? null);
@@ -259,7 +324,7 @@ export default function IMVActiveScreen() {
             e2 instanceof ApiError ? e2.message : e2 instanceof Error ? e2.message : msg;
           Alert.alert('结束访视失败', msg2, [
             {
-              text: '仍进入总结',
+              text: '仍进入整理',
               onPress: () => goVisitSummary(visitId),
             },
             { text: '取消', style: 'cancel' },
@@ -331,7 +396,13 @@ export default function IMVActiveScreen() {
               <Square size={10} color={colors.white} fill={colors.white} />
             )}
             <Text style={styles.endText}>
-              {busy ? '处理中…' : isEnded ? '查看总结' : '结束访视'}
+              {busy
+                ? '结束中…'
+                : isEnded
+                  ? hasActionPack
+                    ? '查看 AI 整理'
+                    : '进入整理'
+                  : '结束访视并整理'}
             </Text>
           </Pressable>
         </View>
@@ -345,7 +416,30 @@ export default function IMVActiveScreen() {
         </Pressable>
       ) : null}
 
+      {voiceBanner ? (
+        <Pressable style={styles.voiceBanner} onPress={() => setVoiceBanner(false)}>
+          <Sparkles size={14} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.voiceBannerTitle}>录音已转写，已加入本次访视素材</Text>
+            <Text style={styles.voiceBannerSub}>
+              结束访视后将自动整理为 Issue、任务、工时和报告草稿（候选，须人工确认）
+            </Text>
+          </View>
+          <Text style={styles.voiceBannerDismiss}>知道了</Text>
+        </Pressable>
+      ) : null}
+
       <ScrollView style={styles.scroll} contentContainerStyle={{ padding: 16, gap: 8 }}>
+        <Card borderColor={`${colors.primary}40`}>
+          <View style={styles.valueRow}>
+            <Sparkles size={14} color={colors.primary} />
+            <Text style={styles.valueText}>
+              现场输入是「素材」不是正式记录。结束访视时 AI 会拆成 Issue / 任务 / 工时 /
+              报告草稿等候选，供你确认后提交。
+            </Text>
+          </View>
+        </Card>
+
         {showActivities && activities.length > 0 && (
           <Card>
             <Text style={styles.sectionTitle}>访视活动清单</Text>
@@ -370,8 +464,10 @@ export default function IMVActiveScreen() {
           </Card>
         )}
 
+        <Text style={styles.feedTitle}>现场素材 · {entries.length} 条</Text>
+
         {entries.map((entry) => (
-          <Card key={entry.id} borderColor={entry.status === 'risk' ? '#FECACA' : undefined}>
+          <Card key={entry.id} borderColor={entry.risk ? '#FECACA' : undefined}>
             <Pressable
               style={styles.entryRow}
               onLongPress={() => !isEnded && openEdit(entry)}
@@ -379,17 +475,25 @@ export default function IMVActiveScreen() {
             >
               <View style={styles.entryTime}>
                 <Text style={styles.timeText}>{entry.time}</Text>
-                {entry.status === 'risk' && <AlertTriangle size={11} color={colors.red} />}
+                {entry.risk && <AlertTriangle size={11} color={colors.red} />}
               </View>
-              <Text style={styles.entryContent}>{entry.content}</Text>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={styles.entryContent}>{entry.content}</Text>
+                <Text style={[styles.processTag, { color: processColor(entry.process) }]}>
+                  {processLabel(entry.process)}
+                  {entry.type === 'VOICE' ? ' · 语音' : entry.type === 'IMAGE' ? ' · 照片' : entry.type === 'FILE' ? ' · 文件' : ''}
+                </Text>
+              </View>
               {!isEnded && <Pencil size={12} color={colors.textMuted} />}
             </Pressable>
           </Card>
         ))}
         <Text style={styles.hint}>
           {isEnded
-            ? '访视已结束，可从总结页继续确认'
-            : '点按记录可编辑或作废 · 结束访视时统一整理问题与工时'}
+            ? hasActionPack
+              ? '访视已结束，可进入 AI 行动包逐项确认'
+              : '访视已结束，点「进入整理」生成候选动作包'
+            : '点按记录可编辑或作废 · 点「结束访视并整理」才会启动 AI 拆分 Issue/任务/工时/报告'}
         </Text>
       </ScrollView>
 
@@ -507,6 +611,29 @@ const styles = StyleSheet.create({
   },
   errorText: { flex: 1, fontSize: 12, color: '#B45309' },
   errorRetry: { fontSize: 12, color: colors.primary, fontWeight: '600' },
+  voiceBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: `${colors.primary}25`,
+  },
+  voiceBannerTitle: { fontSize: 12.5, fontWeight: '600', color: colors.primary },
+  voiceBannerSub: { fontSize: 11, color: colors.primary, marginTop: 2, lineHeight: 16, opacity: 0.9 },
+  voiceBannerDismiss: { fontSize: 11, color: colors.primary, fontWeight: '600' },
+  valueRow: { flexDirection: 'row', gap: 8, padding: 12, alignItems: 'flex-start' },
+  valueText: { flex: 1, fontSize: 12, color: colors.primary, lineHeight: 18 },
+  feedTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  processTag: { fontSize: 11, fontWeight: '600' },
   scroll: { flex: 1 },
   sectionTitle: {
     fontSize: 11.5,
